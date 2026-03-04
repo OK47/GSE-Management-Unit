@@ -38,7 +38,25 @@ constexpr uint8_t FILL_VALVE_CMD_EIO    = AUX_IO_1_EIO;
 //   GSEMU drives this OUTPUT; LOW = open, HIGH = closed.
 constexpr uint8_t FILL_VALVE_STATUS_EIO = AUX_IO_2_EIO;
 
-// AUX_IO_3 and AUX_IO_4 are reserved for the umbilical-release handshake (TBD).
+// AUX_IO_3 is wired to the matching pin on the EMU via the AUX connector.
+// Directions are the REVERSE of the EMU-side definitions.
+//
+// QR release command (EMU → GSEMU):
+//   GSEMU reads this INPUT_PULLUP; LOW when EMU is driving (umbilical connected).
+//   Rising edge #1 (EMU pulses HIGH) = release intent.
+//   Rising edge #2 (connector separates, pullup wins) = physical separation confirmed.
+constexpr uint8_t  QR_CMD_EIO          = AUX_IO_3_EIO;   // INPUT_PULLUP on GSEMU
+
+// QR servo hardware configuration
+// ⚠ PLACEHOLDER values — calibrate on the bench before flight.
+// PWM_HOLD and PWM_OPEN are seeded from Fill valve calibration as a first approximation.
+constexpr uint8_t  QR_SERVO_PWM_CHANNEL = 0;       // PCA9685 channel 0
+constexpr int      QR_SERVO_PWM_HOLD    = 3918;    // 12-bit PWM count, latch engaged   (⚠ placeholder)
+constexpr int      QR_SERVO_PWM_OPEN    = 2329;    // 12-bit PWM count, latch released  (⚠ placeholder)
+constexpr uint16_t QR_SERVO_MOVE_MS     = 600;     // ms — servo stroke time
+constexpr uint16_t QR_RELEASE_HOLD_MS   = 200;     // ms — dwell at open after separation
+
+// AUX_IO_4 reserved for future use.
 
 // --- Relay class --------------------------------------------------------------
 //

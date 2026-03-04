@@ -35,6 +35,7 @@
 #include "KJO_Valve.h"              // Valve base class + servo/motion constants
 #include "KJO_GSE_Display.h"        // OLED scrollMessage() + Find_Available_File()
 #include "KJO_Slave_Valve.h"        // GSEMU-side servo valve driven by EMU GPIO handshake
+#include "KJO_QR_Slave.h"           // GSEMU-side umbilical quick-release actuator
 
 // --- Conditional serial console ----------------------------------------------
 // Uncomment to enable Serial output for debugging.
@@ -68,6 +69,15 @@ Slave_Valve Fill_Valve( FILL_VALVE,
                         FILL_VALVE_BALL_DIAMETER, FILL_VALVE_BORE_DIAMETER, FILL_VALVE_THROAT_DIAMETER,
                         &Servos,
                         &E_GPIO, FILL_VALVE_CMD_EIO, FILL_VALVE_STATUS_EIO );
+
+// Umbilical quick-release servo  --  driven by EMU GPIO CMD edge (QR_Slave).
+// ⚠ QR_SERVO_PWM_HOLD / QR_SERVO_PWM_OPEN are placeholders — calibrate before use.
+// Hardware constants from KJO_GPIO.h.
+QR_Slave QR_Release( QR_SERVO_PWM_CHANNEL,
+                     QR_SERVO_PWM_HOLD, QR_SERVO_PWM_OPEN,
+                     QR_SERVO_MOVE_MS,
+                     &Servos,
+                     &E_GPIO, QR_CMD_EIO );
 
 // SD card log file
 SdFile Log_file;
@@ -133,8 +143,8 @@ void setup()
     E_GPIO.pinMode(    BUTTON_C_EIO, INPUT_PULLUP );
     // AUX_IO_1 (FILL_VALVE_CMD_EIO) and AUX_IO_2 (FILL_VALVE_STATUS_EIO) are
     // configured by Slave_Valve::begin() called below with Fill_Valve.begin().
-    // AUX_IO_3 and AUX_IO_4 are reserved for umbilical-release handshake (TBD).
-    E_GPIO.pinMode(    AUX_IO_3_EIO, OUTPUT );  E_GPIO.digitalWrite( AUX_IO_3_EIO, LOW );
+    // AUX_IO_3 (QR_CMD_EIO) is configured by QR_Release.begin() called below.
+    // AUX_IO_4 reserved for future use.
     E_GPIO.pinMode(    AUX_IO_4_EIO, OUTPUT );  E_GPIO.digitalWrite( AUX_IO_4_EIO, LOW );
 
     // -- SD card ---------------------------------------------------------------
@@ -183,6 +193,10 @@ void setup()
     Fill_Valve.begin();
     scrollMessage( &Screen, "Fill valve ready.", true );
 
+    // -- QR release servo (QR_Slave: sets servo to hold, configures CMD pin) --
+    QR_Release.begin();
+    scrollMessage( &Screen, "QR servo ready.", true );
+
     scrollMessage( &Screen, "GSEMU ready.", true );
     Post_Log_Message( "GSEMU startup complete, version " + String( GSEMU_VERSION ) );
 }
@@ -195,6 +209,9 @@ void loop()
 
     // Service Fill valve: check command bit and update servo + status bit
     Fill_Valve.update();
+
+    // Service QR release servo: detect CMD edges and advance state machine
+    QR_Release.update();
 
     // Check front-panel buttons (local control)
     Check_Buttons();
