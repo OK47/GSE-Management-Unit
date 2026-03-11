@@ -1,93 +1,121 @@
 #include "KJO_QR_Slave.h"
-#include "KJO_GPIO.h"   // QR_RELEASE_HOLD_MS
 
 //
 // QR_Slave — GSEMU-side umbilical quick-release actuator.
+// Level-based command following with physical separation detection.
 // See KJO_QR_Slave.h for full protocol description.
 //
 
+// --- Constructor -------------------------------------------------------------
 QR_Slave::QR_Slave( byte PWM_channel, int PWM_hold, int PWM_open,
                     uint16_t move_time_ms, Adafruit_PWMServoDriver *Servos,
-                    Adafruit_MCP23X17 *gpio, byte cmd_pin )
+                    Adafruit_MCP23X17 *gpio, byte cmd_pin, byte state_pin )
     : QR_Servo( PWM_channel, PWM_hold, PWM_open, move_time_ms, Servos ),
-      _gpio( gpio ), _cmd_pin( cmd_pin ),
-      _prev_cmd( HIGH ), _edge_count( 0 ),
-      _release_time_ms( 0 ), _state( QR_State::ARMED )
+      _gpio( gpio ), _cmd_pin( cmd_pin ), _state_pin( state_pin ),
+      _prev_state( LOW ), _separated( false ), _local_override( false )
 {
 }
 
-// ---------------------------------------------------------------------------
+// --- begin() -----------------------------------------------------------------
+//
+// Configures the CMD and state pins, reads the initial state of the state line,
+// and commands the servo to HOLD (latch engaged).
+//
 void QR_Slave::begin()
 {
-    // Configure the CMD line as INPUT_PULLUP.  While the umbilical is
-    // connected the EMU drives it LOW, overriding the pullup.
-    _gpio->pinMode( _cmd_pin, INPUT_PULLUP );
-    _prev_cmd = _gpio->digitalRead( _cmd_pin );
-    _edge_count = 0;
-    _state = QR_State::ARMED;
+    // CMD pin: INPUT_PULLUP — receives level command from EMU.
+    _gpio->pinMode( _cmd_pin,   INPUT_PULLUP );
+
+    // State pin: INPUT_PULLUP — wired to EMU chassis GND.
+    // Reads LOW when umbilical is connected, HIGH when separated.
+    _gpio->pinMode( _state_pin, INPUT_PULLUP );
+
+    // Capture the initial state line value (expected LOW = connected at startup).
+    _prev_state = _gpio->digitalRead( _state_pin );
+    _separated  = ( _prev_state == HIGH );  // already separated if HIGH at startup
 
     // Command servo to hold (latch engaged).
     QR_Servo::begin();
 }
 
-// ---------------------------------------------------------------------------
-// Non-blocking state machine.  Must be called every loop() iteration.
+// --- update() ----------------------------------------------------------------
+//
+// Must be called from loop() on every iteration.
+//
+// Servo control (level-based):
+//   CMD LOW  + servo not already opening or open  → openServo()
+//   CMD HIGH + servo not already holding or held  → holdServo()
+//
+// Separation detection:
+//   Monitors the state line for a LOW → HIGH transition.
+//   Sets the _separated latch on first confirmed HIGH.
+//
 void QR_Slave::update()
 {
-    bool curr_cmd    = _gpio->digitalRead( _cmd_pin );
-    bool rising_edge = ( curr_cmd == HIGH && _prev_cmd == LOW );
-    _prev_cmd = curr_cmd;
+    // Update the servo's timed-move state machine.
+    isMoving();
 
-    switch( _state )
+    // ── Servo command following ───────────────────────────────────────────────
+    // Local override (Button A held) takes priority over the CMD line.
+    // While _local_override is true the CMD line is ignored and the servo is
+    // commanded open regardless of what the EMU is driving.
+    bool cmd = _local_override ? LOW : _gpio->digitalRead( _cmd_pin );
+
+    if( cmd == LOW )
     {
-        case QR_State::ARMED:
-            if( rising_edge )
-            {
-                // Edge #1: EMU release-intent pulse (HIGH for ~QR_RELEASE_PULSE_MS).
-                _edge_count = 1;
-                openServo();
-                _state = QR_State::OPENING;
-            }
-            break;
-
-        case QR_State::OPENING:
-            // Continue watching for Edge #2 while servo is moving.
-            // Edge #2 can arrive before the servo reaches open position —
-            // handle it immediately regardless of servo completion.
-            if( rising_edge )
-            {
-                // Edge #2: physical connector separation, INPUT_PULLUP wins.
-                _edge_count      = 2;
-                _release_time_ms = millis();
-                _state           = QR_State::RELEASED;
-            }
-            break;
-
-        case QR_State::RELEASED:
-            // Dwell at open position to ensure latch has fully cleared,
-            // then retract the servo.
-            if( millis() - _release_time_ms >= QR_RELEASE_HOLD_MS )
-            {
-                holdServo();
-                _state = QR_State::CLOSING;
-            }
-            break;
-
-        case QR_State::CLOSING:
-            // Wait for timed servo retraction to complete.
-            if( !isMoving() )
-                _state = QR_State::DONE;
-            break;
-
-        case QR_State::DONE:
-            // Terminal state — no further action.
-            break;
+        // CMD LOW: EMU commands latch open.
+        // Only issue the command if we are not already opening or fully open.
+        if( _servo_state != QR_Servo_State::MOVING_TO_OPEN &&
+            _servo_state != QR_Servo_State::AT_OPEN )
+        {
+            openServo();
+        }
     }
+    else
+    {
+        // CMD HIGH (or disconnected pullup): hold latch.
+        // Only issue the command if we are not already holding or fully held.
+        if( _servo_state != QR_Servo_State::MOVING_TO_HOLD &&
+            _servo_state != QR_Servo_State::AT_HOLD )
+        {
+            holdServo();
+        }
+    }
+
+    // ── Physical separation detection ────────────────────────────────────────
+    bool curr_state = _gpio->digitalRead( _state_pin );
+
+    if( curr_state == HIGH && _prev_state == LOW )
+    {
+        // Rising edge on state line: umbilical has physically separated.
+        _separated = true;
+    }
+
+    _prev_state = curr_state;
 }
 
-// ---------------------------------------------------------------------------
-QR_State QR_Slave::getState()  { return _state; }
-bool     QR_Slave::isReleased(){ return ( _state == QR_State::RELEASED ||
-                                          _state == QR_State::CLOSING   ||
-                                          _state == QR_State::DONE ); }
-bool     QR_Slave::isDone()    { return _state == QR_State::DONE; }
+// --- State accessors ---------------------------------------------------------
+
+// Returns true once the state line has gone HIGH (physical separation confirmed).
+// Latched — returns true for the remainder of the session after separation.
+bool QR_Slave::isSeparated() { return _separated; }
+
+// Returns true while the state line is LOW (umbilical physically connected).
+bool QR_Slave::isConnected() { return ( _gpio->digitalRead( _state_pin ) == LOW ); }
+
+// --- Local override ----------------------------------------------------------
+
+// Engage local release: servo opens on the next update() regardless of CMD line.
+void QR_Slave::localRelease()
+{
+    _local_override = true;
+}
+
+// Release local override: servo returns to following the CMD line on the next update().
+void QR_Slave::localHold()
+{
+    _local_override = false;
+}
+
+// Returns true while the local button override is active.
+bool QR_Slave::isLocalOverride() { return _local_override; }

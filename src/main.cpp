@@ -12,6 +12,7 @@
     - Adafruit SH1107 128x64 OLED display (I2C)
     - Adafruit MCP23X17 GPIO expander (I2C)   [buttons + buzzer + aux I/O]
     - Adafruit PWM Servo Wing (I2C)
+    - Adafruit ADS1015 12-bit ADC daughter board (I2C)  [LiPo monitor + AUX analog input]
     - PCF8523 Real-time clock (I2C)
     - SD card (SPI)
 
@@ -36,6 +37,8 @@
 #include "KJO_GSE_Display.h"        // OLED scrollMessage() + Find_Available_File()
 #include "KJO_Slave_Valve.h"        // GSEMU-side servo valve driven by EMU GPIO handshake
 #include "KJO_QR_Slave.h"           // GSEMU-side umbilical quick-release actuator
+#include <Adafruit_ADS1X15.h>
+#include "KJO_Analog.h"             // ADS1015 channel assignments, LiPo scale, AUX threshold
 
 // --- Conditional serial console ----------------------------------------------
 // Uncomment to enable Serial output for debugging.
@@ -77,17 +80,32 @@ QR_Slave QR_Release( QR_SERVO_PWM_CHANNEL,
                      QR_SERVO_PWM_HOLD, QR_SERVO_PWM_OPEN,
                      QR_SERVO_MOVE_MS,
                      &Servos,
-                     &E_GPIO, QR_CMD_EIO );
+                     &E_GPIO, QR_CMD_EIO, RELEASE_STATE_EIO );
+
+// External ADS1015 12-bit ADC (I2C)
+Adafruit_ADS1015 Analog_Inputs;
+
+// Battery voltage display timer
+long battery_display_ms = 0;
+
+// AUX analog input previous digital state (for edge detection in Check_AUX_Input())
+bool aux_prev_state = false;   // expected LOW at startup
+
+// QR separation event: latched true once umbilical separation has been logged.
+bool qr_sep_logged  = false;
 
 // SD card log file
 SdFile Log_file;
 String log_file_name;
 
 // --- Forward declarations -----------------------------------------------------
-void Test_Buzzer();
-void Beep( short count );
-void Check_Buttons();
-void Post_Log_Message( String S );
+void  Test_Buzzer();
+void  Beep( short count );
+void  Check_Buttons();
+void  Post_Log_Message( String S );
+float GSEMU_Battery_Voltage();
+void  Check_Battery();
+void  Check_AUX_Input();
 
 // -----------------------------------------------------------------------------
 void setup()
@@ -143,9 +161,9 @@ void setup()
     E_GPIO.pinMode(    BUTTON_C_EIO, INPUT_PULLUP );
     // AUX_IO_1 (FILL_VALVE_CMD_EIO) and AUX_IO_2 (FILL_VALVE_STATUS_EIO) are
     // configured by Slave_Valve::begin() called below with Fill_Valve.begin().
-    // AUX_IO_3 (QR_CMD_EIO) is configured by QR_Release.begin() called below.
-    // AUX_IO_4 reserved for future use.
-    E_GPIO.pinMode(    AUX_IO_4_EIO, OUTPUT );  E_GPIO.digitalWrite( AUX_IO_4_EIO, LOW );
+    // AUX_IO_3 (QR_CMD_EIO) and AUX_IO_4 (RELEASE_STATE_EIO) are
+    // configured by QR_Release.begin() called below.
+    // AUX_IO_5 (LAUNCH_ENABLE_EIO) and AUX_IO_6 (REMOTE_START_EIO) configured below.
 
     // -- SD card ---------------------------------------------------------------
     if( !SD.begin( CARD_CS ) )
@@ -180,6 +198,36 @@ void setup()
     scrollMessage( &Screen, "Buzzer ready.", true );
     Test_Buzzer();
 
+    // -- External ADC (ADS1015) ------------------------------------------------
+    Analog_Inputs.begin();
+    Analog_Inputs.setGain( GAIN_ONE );
+    {
+        float   bat_v   = GSEMU_Battery_Voltage();
+        String  bat_msg = "Bat: " + String( bat_v, 2 ) + " V";
+        scrollMessage( &Screen, bat_msg, true );
+        Post_Log_Message( bat_msg );
+    }
+    battery_display_ms = millis();
+    scrollMessage( &Screen, "Analog ready.", true );
+
+    // -- Launch Enable input and Remote Start output ---------------------------
+    // LAUNCH_ENABLE_EIO (I/O 5): INPUT_PULLUP — reads EMU remote-start enable signal.
+    // REMOTE_START_EIO  (I/O 6): OUTPUT — drives engine start command to EMU.
+    //   Driven LOW only when AUX A/D input is HIGH AND LAUNCH_ENABLE reads LOW.
+    E_GPIO.pinMode(      LAUNCH_ENABLE_EIO, INPUT_PULLUP );
+    E_GPIO.pinMode(      REMOTE_START_EIO,  OUTPUT       );
+    {
+        int16_t aux_raw     = Analog_Inputs.readADC_SingleEnded( AD_AUX_CHANNEL );
+        aux_prev_state      = ( aux_raw >= AD_AUX_THRESHOLD );
+        bool launch_enabled = ( E_GPIO.digitalRead( LAUNCH_ENABLE_EIO ) == LOW );
+        E_GPIO.digitalWrite( REMOTE_START_EIO,
+                             ( aux_prev_state && launch_enabled ) ? LOW : HIGH );
+        Post_Log_Message( "AUX initial state: " + String( aux_prev_state ? "HIGH" : "LOW" ) );
+        Post_Log_Message( "Launch Enable: "
+                          + String( launch_enabled ? "ENABLED" : "DISABLED" ) );
+    }
+    scrollMessage( &Screen, "AUX ready.", true );
+
     // -- Servo wing ------------------------------------------------------------
     Servos.begin();
     Servos.setPWMFreq( SERVO_FREQUENCY );
@@ -210,11 +258,25 @@ void loop()
     // Service Fill valve: check command bit and update servo + status bit
     Fill_Valve.update();
 
-    // Service QR release servo: detect CMD edges and advance state machine
+    // Service QR release servo: follow CMD level, detect physical separation
     QR_Release.update();
+
+    // Log umbilical separation event once when first confirmed
+    if( QR_Release.isSeparated() && !qr_sep_logged )
+    {
+        Post_Log_Message( "QR: umbilical separated." );
+        scrollMessage( &Screen, "QR: Released", false );
+        qr_sep_logged = true;
+    }
 
     // Check front-panel buttons (local control)
     Check_Buttons();
+
+    // Display battery voltage every BATTERY_DISPLAY_INTERVAL_MS (non-blocking)
+    Check_Battery();
+
+    // Poll AUX analog input; drive inverted output and log on state change
+    Check_AUX_Input();
 }
 
 // -----------------------------------------------------------------------------
@@ -265,14 +327,24 @@ void Check_Buttons()
     bool curr_B = E_GPIO.digitalRead( BUTTON_B_EIO );
     bool curr_C = E_GPIO.digitalRead( BUTTON_C_EIO );
 
-    // Button A  --  display Fill valve position status (3 beeps)
+    // Button A  --  hold-to-release: open QR latch while held, close when released.
+    // Pressing Button A calls localRelease() — QR_Slave::update() then ignores
+    // the CMD line and keeps the servo open for as long as the button is held.
+    // Releasing Button A calls localHold() — servo returns to CMD-line following.
     if( curr_A == LOW && prev_A == HIGH )
     {
-        Beep( 3 );
-        scrollMessage( &Screen,
-                       Fill_Valve.isOpen()   ? "Fill: OPEN"   :
-                       Fill_Valve.isClosed() ? "Fill: CLOSED" : "Fill: MOVING",
-                       true );
+        // Falling edge: button pressed — engage local release
+        Beep( 1 );
+        scrollMessage( &Screen, "QR: Releasing", false );
+        Post_Log_Message( "QR: Local release commanded." );
+        QR_Release.localRelease();
+    }
+    if( curr_A == HIGH && prev_A == LOW )
+    {
+        // Rising edge: button released — return servo to hold
+        QR_Release.localHold();
+        Post_Log_Message( "QR: Local release complete." );
+        scrollMessage( &Screen, "QR: Hold", false );
     }
 
     // Button B  --  manually command Fill valve CLOSED (2 beeps)
@@ -296,6 +368,64 @@ void Check_Buttons()
     prev_A = curr_A;
     prev_B = curr_B;
     prev_C = curr_C;
+}
+
+// -----------------------------------------------------------------------------
+// Reads and returns the GSEMU 2S LiPo battery voltage in volts.
+// Uses ADS1015 channel AD_LIPO_CHANNEL with GSEMU-specific divider scale.
+float GSEMU_Battery_Voltage()
+{
+    int16_t raw = Analog_Inputs.readADC_SingleEnded( AD_LIPO_CHANNEL );
+    return (float)raw * AD_BASE_SCALE * GSEMU_LIPO_SCALE;
+}
+
+// -----------------------------------------------------------------------------
+// Called from loop(). Displays the battery voltage on the scroll display and
+// logs it to the SD card every BATTERY_DISPLAY_INTERVAL_MS.  Non-blocking.
+void Check_Battery()
+{
+    if( (long)( millis() - battery_display_ms ) < (long)BATTERY_DISPLAY_INTERVAL_MS ) return;
+    battery_display_ms = millis();
+
+    float  bat_v = GSEMU_Battery_Voltage();
+    String msg   = "Bat: " + String( bat_v, 2 ) + " V";
+    scrollMessage( &Screen, msg, false );
+    Post_Log_Message( msg );
+}
+
+// -----------------------------------------------------------------------------
+// Called from loop() on every iteration.
+// Reads the AUX analog input (ADS1015 channel AD_AUX_CHANNEL) and thresholds it
+// to a digital HIGH/LOW state.  Logs AUX input transitions.
+//
+// Remote Start logic (gated):
+//   REMOTE_START_EIO is driven LOW only when BOTH:
+//     - AUX input is HIGH (above AD_AUX_THRESHOLD)
+//     - LAUNCH_ENABLE_EIO reads LOW (EMU has enabled remote start)
+//   Otherwise REMOTE_START_EIO is driven HIGH (hold / no start).
+//
+void Check_AUX_Input()
+{
+    int16_t raw            = Analog_Inputs.readADC_SingleEnded( AD_AUX_CHANNEL );
+    bool    curr_state     = ( raw >= AD_AUX_THRESHOLD );
+    bool    launch_enabled = ( E_GPIO.digitalRead( LAUNCH_ENABLE_EIO ) == LOW );
+
+    // Log AUX input state transitions
+    if( curr_state != aux_prev_state )
+    {
+        String msg = String( "AUX: " )
+                   + ( aux_prev_state ? "HIGH" : "LOW" )
+                   + " -> "
+                   + ( curr_state     ? "HIGH" : "LOW" );
+        Post_Log_Message( msg );
+        scrollMessage( &Screen, msg, false );
+        aux_prev_state = curr_state;
+    }
+
+    // Drive Remote Start: LOW = start commanded; HIGH = hold.
+    // Gated — only asserted when AUX input HIGH AND remote start is enabled.
+    E_GPIO.digitalWrite( REMOTE_START_EIO,
+                         ( curr_state && launch_enabled ) ? LOW : HIGH );
 }
 
 // -----------------------------------------------------------------------------

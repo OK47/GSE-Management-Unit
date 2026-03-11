@@ -21,42 +21,63 @@ constexpr uint8_t BUTTON_C_EIO =  5;   // Port A, pin A5  --  display button C
 constexpr uint8_t BUZZER_EIO   =  6;   // Port A, pin A6  --  audible alarm buzzer relay
 
 // Port B pins (8-15)
-constexpr uint8_t AUX_IO_1_EIO =  8;   // Port B, pin B0  --  auxiliary output 1
-constexpr uint8_t AUX_IO_2_EIO =  9;   // Port B, pin B1  --  auxiliary output 2
-constexpr uint8_t AUX_IO_3_EIO = 10;   // Port B, pin B2  --  auxiliary output 3
-constexpr uint8_t AUX_IO_4_EIO = 11;   // Port B, pin B3  --  auxiliary output 4
+constexpr uint8_t AUX_IO_1_EIO =  8;   // Port B, pin B0  --  AUX connector 1, I/O 1
+constexpr uint8_t AUX_IO_2_EIO =  9;   // Port B, pin B1  --  AUX connector 1, I/O 2
+constexpr uint8_t AUX_IO_3_EIO = 10;   // Port B, pin B2  --  AUX connector 2, I/O 3
+constexpr uint8_t AUX_IO_4_EIO = 11;   // Port B, pin B3  --  AUX connector 2, I/O 4
+constexpr uint8_t AUX_IO_5_EIO = 12;   // Port B, pin B4  --  AUX connector 3, I/O 5
+constexpr uint8_t AUX_IO_6_EIO = 13;   // Port B, pin B5  --  AUX connector 3, I/O 6
 
-// --- EMU handshake pin aliases ------------------------------------------------
-// AUX_IO_1 and AUX_IO_2 are wired to matching pins on the EMU via the AUX
-// connector.  Note: directions are the REVERSE of the EMU-side definitions.
+// --- AUX 1: Fill valve handshake (EMU ↔ GSEMU) --------------------------------
 //
-// Fill valve command (EMU → GSEMU):
-//   GSEMU reads this INPUT_PULLUP; LOW = open command, HIGH = close/idle.
+// I/O 1 — Fill valve command (EMU OUTPUT → GSEMU INPUT_PULLUP):
+//   EMU drives this OUTPUT; GSEMU reads INPUT_PULLUP.
+//   LOW  = EMU commands fill valve OPEN.
+//   HIGH = EMU commands fill valve CLOSE / idle (safe default when disconnected).
 constexpr uint8_t FILL_VALVE_CMD_EIO    = AUX_IO_1_EIO;
 
-// Fill valve status (GSEMU → EMU):
-//   GSEMU drives this OUTPUT; LOW = open, HIGH = closed.
+// I/O 2 — Fill valve status (GSEMU OUTPUT → EMU INPUT_PULLUP):
+//   GSEMU drives this OUTPUT; EMU reads INPUT_PULLUP.
+//   LOW  = fill valve is OPEN (filling).
+//   HIGH = fill valve is CLOSED.
 constexpr uint8_t FILL_VALVE_STATUS_EIO = AUX_IO_2_EIO;
 
-// AUX_IO_3 is wired to the matching pin on the EMU via the AUX connector.
-// Directions are the REVERSE of the EMU-side definitions.
+// --- AUX 2: Umbilical quick-release (EMU ↔ GSEMU) ----------------------------
 //
-// QR release command (EMU → GSEMU):
-//   GSEMU reads this INPUT_PULLUP; LOW when EMU is driving (umbilical connected).
-//   Rising edge #1 (EMU pulses HIGH) = release intent.
-//   Rising edge #2 (connector separates, pullup wins) = physical separation confirmed.
-constexpr uint8_t  QR_CMD_EIO          = AUX_IO_3_EIO;   // INPUT_PULLUP on GSEMU
+// I/O 3 — QR release command (EMU OUTPUT → GSEMU INPUT_PULLUP):
+//   Level-based command.  GSEMU reads INPUT_PULLUP.
+//   LOW  = EMU commands latch OPEN (release umbilical).
+//   HIGH = EMU commands latch CLOSED / hold (safe default when disconnected).
+constexpr uint8_t QR_CMD_EIO           = AUX_IO_3_EIO;
 
-// QR servo hardware configuration
+// I/O 4 — QR release state (GSEMU INPUT_PULLUP ← EMU GND connection):
+//   GSEMU reads this as INPUT_PULLUP; it is wired to EMU chassis GND.
+//   LOW  = umbilical connector is physically connected (EMU GND holds it LOW).
+//   HIGH = umbilical connector has separated (INPUT_PULLUP floats HIGH).
+constexpr uint8_t RELEASE_STATE_EIO    = AUX_IO_4_EIO;
+
+// --- AUX 3: Remote launch enable and start (EMU ↔ GSEMU) ---------------------
+//
+// I/O 5 — Remote launch enable (EMU OUTPUT → GSEMU INPUT_PULLUP):
+//   GSEMU reads INPUT_PULLUP.
+//   LOW  = EMU has enabled remote engine start.
+//   HIGH = Remote start disabled (safe default when disconnected).
+constexpr uint8_t LAUNCH_ENABLE_EIO    = AUX_IO_5_EIO;
+
+// I/O 6 — Remote start command (GSEMU OUTPUT → EMU INPUT_PULLUP):
+//   GSEMU drives this OUTPUT; EMU reads INPUT_PULLUP.
+//   LOW  = GSEMU commands engine start (asserted when AUX A/D is HIGH AND
+//          LAUNCH_ENABLE_EIO is LOW).
+//   HIGH = Hold / no start (safe default when disconnected).
+constexpr uint8_t REMOTE_START_EIO     = AUX_IO_6_EIO;
+
+// --- QR servo hardware configuration -----------------------------------------
 // ⚠ PLACEHOLDER values — calibrate on the bench before flight.
 // PWM_HOLD and PWM_OPEN are seeded from Fill valve calibration as a first approximation.
 constexpr uint8_t  QR_SERVO_PWM_CHANNEL = 0;       // PCA9685 channel 0
 constexpr int      QR_SERVO_PWM_HOLD    = 3918;    // 12-bit PWM count, latch engaged   (⚠ placeholder)
 constexpr int      QR_SERVO_PWM_OPEN    = 2329;    // 12-bit PWM count, latch released  (⚠ placeholder)
 constexpr uint16_t QR_SERVO_MOVE_MS     = 600;     // ms — servo stroke time
-constexpr uint16_t QR_RELEASE_HOLD_MS   = 200;     // ms — dwell at open after separation
-
-// AUX_IO_4 reserved for future use.
 
 // --- Relay class --------------------------------------------------------------
 //
