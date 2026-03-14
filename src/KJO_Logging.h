@@ -7,7 +7,7 @@
 //
 //    Hardware and file-system definitions for the SD card data logger.
 //    Log files are sequentially numbered: Log_0.txt, Log_1.txt, etc.,
-//    stored under the LOG_FILE_FOLDER directory on the SD card.
+//    written directly to the root of the SD card.
 //
 
 #include <Arduino.h>
@@ -16,7 +16,6 @@
 constexpr uint8_t CARD_CS = 10;     // SPI chip select for the SD card
 
 // --- Log file naming ----------------------------------------------------------
-constexpr const char* LOG_FILE_FOLDER    = "GSE_Logs/";  // Directory on SD card for log files
-constexpr const char* LOG_FILE_NAME_BASE = "Log_";       // Base name; index + ".txt" is appended
+constexpr const char* LOG_FILE_NAME_BASE = "Log_";  // Base name; index + ".txt" appended → e.g. "Log_0.txt"
 
 #endif // KJO_LOGGING_H

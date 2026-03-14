@@ -62,21 +62,19 @@ void scrollMessage( Adafruit_SH1107 *display, String message, bool delay_flag )
 
 // --- Find_Available_File ------------------------------------------------------
 //
-// Scans the SD card for the next unused log-file index and returns the full
-// path string.  Files are named:  LOG_FILE_FOLDER + LOG_FILE_NAME_BASE + N + ".txt"
-// The returned string is ready to pass to SD.open() or SD.exists().
+// Scans the SD card root for the next unused log-file index and returns the
+// file name string.  Files are named:  LOG_FILE_NAME_BASE + N + ".txt"
+// (e.g. "Log_0.txt").  The returned string is ready to pass to SD.open().
 //
 String Find_Available_File()
 {
     short  index = 0;
-    String file_name = String( LOG_FILE_FOLDER ) + String( LOG_FILE_NAME_BASE )
-                       + String( index ) + ".txt";
+    String file_name = String( LOG_FILE_NAME_BASE ) + String( index ) + ".txt";
 
     while( SD.exists( file_name.c_str() ) )
     {
         index++;
-        file_name = String( LOG_FILE_FOLDER ) + String( LOG_FILE_NAME_BASE )
-                    + String( index ) + ".txt";
+        file_name = String( LOG_FILE_NAME_BASE ) + String( index ) + ".txt";
     }
 
     return file_name;
