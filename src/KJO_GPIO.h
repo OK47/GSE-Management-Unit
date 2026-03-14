@@ -72,12 +72,11 @@ constexpr uint8_t LAUNCH_ENABLE_EIO    = AUX_IO_5_EIO;
 constexpr uint8_t REMOTE_START_EIO     = AUX_IO_6_EIO;
 
 // --- QR servo hardware configuration -----------------------------------------
-// ⚠ PLACEHOLDER values — calibrate on the bench before flight.
-// PWM_HOLD and PWM_OPEN are seeded from Fill valve calibration as a first approximation.
+// Calibrated March 2026 on the bench.
 constexpr uint8_t  QR_SERVO_PWM_CHANNEL = 0;       // PCA9685 channel 0
-constexpr int      QR_SERVO_PWM_HOLD    = 3918;    // 12-bit PWM count, latch engaged   (⚠ placeholder)
-constexpr int      QR_SERVO_PWM_OPEN    = 2329;    // 12-bit PWM count, latch released  (⚠ placeholder)
-constexpr uint16_t QR_SERVO_MOVE_MS     = 600;     // ms — servo stroke time
+constexpr int      QR_SERVO_PWM_HOLD    = 2400;    // 12-bit PWM count, latch engaged (not released)
+constexpr int      QR_SERVO_PWM_OPEN    = 2800;    // 12-bit PWM count, latch released
+constexpr uint16_t QR_SERVO_MOVE_MS     = 1000;    // ms — servo stroke time
 
 // --- Relay class --------------------------------------------------------------
 //
