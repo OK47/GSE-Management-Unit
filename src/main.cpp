@@ -106,6 +106,7 @@ void  Post_Log_Message( String S );
 float GSEMU_Battery_Voltage();
 void  Check_Battery();
 void  Check_AUX_Input();
+void  Log_Config();
 
 // -----------------------------------------------------------------------------
 void setup()
@@ -247,6 +248,7 @@ void setup()
 
     scrollMessage( &Screen, "GSEMU ready.", true );
     Post_Log_Message( "GSEMU startup complete, version " + String( GSEMU_VERSION ) );
+    Log_Config();
 }
 
 // -----------------------------------------------------------------------------
@@ -426,6 +428,38 @@ void Check_AUX_Input()
     // Gated — only asserted when AUX input HIGH AND remote start is enabled.
     E_GPIO.digitalWrite( REMOTE_START_EIO,
                          ( curr_state && launch_enabled ) ? LOW : HIGH );
+}
+
+// -----------------------------------------------------------------------------
+// Writes a human-readable configuration snapshot to the SD log at startup.
+// Logs firmware version, RTC time, valve calibration endpoints, QR servo
+// calibration, and battery voltage.
+void Log_Config()
+{
+    DateTime now = RT_Clock.now();
+    Post_Log_Message( "[CFG] ===== GSEMU startup configuration =====" );
+    Post_Log_Message( "[CFG] Version:   " + String( GSEMU_VERSION ) );
+    Post_Log_Message( String("[CFG] RTC time: ")
+        + String(now.year())   + "-"
+        + String(now.month())  + "-"
+        + String(now.day())    + " "
+        + String(now.hour())   + ":"
+        + String(now.minute()) + ":"
+        + String(now.second()) );
+    Post_Log_Message( "[CFG] Battery:   " + String( GSEMU_Battery_Voltage(), 2 ) + " V" );
+
+    // --- Fill valve calibration ----------------------------------------------
+    Post_Log_Message( String("[CFG] Fill PWM open=") + String(FILL_VALVE_PWM_OPEN)
+        + " close=" + String(FILL_VALVE_PWM_CLOSE)
+        + " | Pot open=" + String(FILL_VALVE_POS_OPEN)
+        + " closed="     + String(FILL_VALVE_POS_CLOSED) );
+    Post_Log_Message( "[CFG] Valve dead-band: " + String( VALVE_POSITION_DEAD_BAND ) + " counts" );
+
+    // --- QR servo calibration ------------------------------------------------
+    Post_Log_Message( String("[CFG] QR servo hold=") + String(QR_SERVO_PWM_HOLD)
+        + " open="     + String(QR_SERVO_PWM_OPEN)
+        + " move_ms="  + String(QR_SERVO_MOVE_MS) );
+    Post_Log_Message( "[CFG] ==========================================" );
 }
 
 // -----------------------------------------------------------------------------
