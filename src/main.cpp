@@ -76,6 +76,10 @@ Adafruit_MCP2515 CAN_Controller( CAN_CS_PIN );
 
 constexpr unsigned long CAN_RESPONSE_TIMEOUT_MS = 500;   // bumped from 200ms: doubles as Check_Fill()'s per-attempt weight-poll timeout
 
+// SD/RTC init status -- used for CAN_GET_HEALTH_STATUS
+bool sd_ok  = false;   // set in setup(); used for CAN_GET_HEALTH_STATUS
+bool rtc_ok = false;   // set in setup(); used for CAN_GET_HEALTH_STATUS
+
 // Sends a CAN command frame to 'destination' and blocks (bounded by
 // CAN_RESPONSE_TIMEOUT_MS) waiting for its response. Returns false on
 // timeout (response_out is left untouched).
@@ -160,6 +164,18 @@ void Check_CAN()
             Fill_Abort();
             Send_CAN_Response( source, CAN_ABORT_FILL, true, 0.0f );
             break;
+
+        case CAN_GET_HEALTH_STATUS:
+        {
+            uint16_t bits = 0;
+            if( !sd_ok )                                        bits |= HEALTH_SD_INIT_FAIL;
+            if( !rtc_ok )                                        bits |= HEALTH_RTC_INIT_FAIL;
+            if( E_GPIO.digitalRead( GSEMU_LINK_SENSE_EIO ) == HIGH ) bits |= HEALTH_LINK_SENSE_LOST;
+            // HEALTH_GSEMU_FILL_VALVE_FAIL intentionally always 0 -- no
+            // fault detection implemented for the Fill valve in this plan.
+            Send_CAN_Response( source, CAN_GET_HEALTH_STATUS, true, (float)bits );
+            break;
+        }
 
         default:
             // TARE / GET_BATTERY_VOLTAGE / REPORT_CURRENT_WEIGHT /
@@ -372,7 +388,8 @@ void setup()
     // AUX_IO_5 (LAUNCH_ENABLE_EIO) and AUX_IO_6 (REMOTE_START_EIO) configured below.
 
     // -- SD card ---------------------------------------------------------------
-    if( !SD.begin( CARD_CS ) )
+    sd_ok = SD.begin( CARD_CS );
+    if( !sd_ok )
     {
         scrollMessage( &Screen, "SD card Failed.", true );
     }
@@ -384,7 +401,8 @@ void setup()
     }
 
     // -- Real-time clock -------------------------------------------------------
-    if( !RT_Clock.begin() )
+    rtc_ok = RT_Clock.begin();
+    if( !rtc_ok )
     {
         scrollMessage( &Screen, "RTC fail.", true );
     }
