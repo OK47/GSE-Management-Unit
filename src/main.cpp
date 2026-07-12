@@ -213,6 +213,87 @@ void  Check_Battery();
 void  Check_AUX_Input();
 void  Log_Config();
 
+// --- Fill state machine ---------------------------------------------------------
+// Armed by EMU's CAN_BEGIN_FILL (after CAN_SET_FILL_TARGET has already
+// stored the target). Runs entirely locally on GSEMU: tares LCMU, opens
+// the Fill valve, polls LCMU's current weight against the stored target,
+// and closes the valve itself the moment the target is reached -- no
+// further authorization from EMU is needed to close. EMU separately polls
+// Fill_Is_Complete() via CAN_QUERY_FILL_STATUS at a much lower rate.
+constexpr unsigned long FILL_POLL_INTERVAL_MS = 50;
+
+float         fill_target_lbm   = 0.0f;
+bool          fill_active       = false;
+bool          fill_complete     = false;
+unsigned long last_fill_poll_ms = 0;
+
+void Fill_Set_Target( float target_lbm )
+{
+    fill_target_lbm = target_lbm;
+}
+
+bool Fill_Begin()
+{
+    if( fill_active ) return true;   // already running
+
+    CAN_Response_Frame tare_resp;
+    if( !Send_CAN_Command( CAN_NODE_LCMU, CAN_TARE, 0.0f, tare_resp ) )
+    {
+        Post_Log_Message( "[FILL] LCMU did not respond to tare -- fill not started." );
+        return false;
+    }
+
+    Fill_Valve.open();
+    fill_active       = true;
+    fill_complete     = false;
+    last_fill_poll_ms = millis();
+    Post_Log_Message( String( "[FILL] Started -- target " ) + String( fill_target_lbm, 2 ) + " lbm" );
+    return true;
+}
+
+void Fill_Abort()
+{
+    if( !fill_active ) return;
+
+    Fill_Valve.close();
+    fill_active   = false;
+    fill_complete = true;
+    Post_Log_Message( "[FILL] Aborted -- valve closed." );
+}
+
+bool Fill_Is_Complete()
+{
+    return fill_complete;
+}
+
+// Call every loop() iteration. Non-blocking: polls LCMU at
+// FILL_POLL_INTERVAL_MS, closes the valve and marks complete once the
+// target is reached.
+void Check_Fill()
+{
+    if( !fill_active ) return;
+
+    unsigned long now = millis();
+    if( now - last_fill_poll_ms < FILL_POLL_INTERVAL_MS ) return;
+    last_fill_poll_ms = now;
+
+    CAN_Response_Frame weight_resp;
+    if( !Send_CAN_Command( CAN_NODE_LCMU, CAN_REPORT_CURRENT_WEIGHT, 0.0f, weight_resp ) )
+    {
+        Post_Log_Message( "[FILL] LCMU did not respond to weight poll." );
+        return;   // try again next interval rather than aborting on one missed poll
+    }
+
+    if( weight_resp.r_val >= fill_target_lbm )
+    {
+        Fill_Valve.close();
+        fill_active   = false;
+        fill_complete = true;
+        Post_Log_Message( String( "[FILL] Target reached at " ) + String( weight_resp.r_val, 2 )
+                         + " lbm -- valve closed." );
+    }
+}
+
 // -----------------------------------------------------------------------------
 void setup()
 {
@@ -399,6 +480,9 @@ void loop()
 
     // Service CAN command dispatch (EMU -> GSEMU)
     Check_CAN();
+
+    // Service autonomous fill state machine (tare, open, poll, close on target)
+    Check_Fill();
 }
 
 // -----------------------------------------------------------------------------
