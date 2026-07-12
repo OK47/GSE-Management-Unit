@@ -19,6 +19,7 @@
 - Weight-reached comparison: GSEMU polls LCMU's `CAN_REPORT_CURRENT_WEIGHT` and compares the returned value against the stored target directly (no tolerance/hysteresis band — the spec calls the resulting overshoot from CAN-speed polling "vanishingly small" against the fill quantities involved).
 - All existing GSEMU behavior not touched by this plan (QR release, battery display, AUX input monitoring, buzzer) is unchanged.
 - No hardware exists yet. Every task's verification is `pio run` (compiles clean).
+- `CAN_GET_HEALTH_STATUS` (added to `KJO_CAN_Command_Defs.h` during the LCMU plan's final-review fix) lets any CAN node query any other node's fault status — a bitmask decimal-encoded into `CAN_Response_Frame.r_val`. Task 6 implements GSEMU's response.
 
 ---
 
@@ -494,6 +495,64 @@ Expected: `SUCCESS`
 ```bash
 git add src/main.cpp
 git commit -m "Final integration pass for GSEMU CAN command handling; remove unused Slave_Valve"
+```
+
+---
+
+### Task 6: CAN_GET_HEALTH_STATUS response
+
+**Files:**
+- Modify: `GSE Management Unit/src/main.cpp`
+
+**Interfaces:**
+- Consumes: `CAN_GET_HEALTH_STATUS`/`HEALTH_*` bit constants (`KJO_CAN_Command_Defs.h`, added during the LCMU plan's final-review fix), `Send_CAN_Response()` (Task 3), `GSEMU_LINK_SENSE_EIO` (Task 1).
+- Produces: `Check_CAN()` handling for `CAN_GET_HEALTH_STATUS`. Consumed by EMU's `RCU_STATUS` handler (EMU CAN-integration plan, Task 8), which queries this to relay GSEMU's health up to RCU.
+
+**Context:** Any CAN node can query any other node's fault status via `CAN_GET_HEALTH_STATUS`, added to the shared header so an operator using the RCU can diagnose a remote fault on a unit they can't physically approach. This task adds GSEMU's response: bits 0-2 (universal: SD init failure, RTC init failure, link-sense lost) plus bit 8 (`HEALTH_GSEMU_FILL_VALVE_FAIL`, reserved — always 0 for now, since this plan doesn't implement Fill-valve fault detection).
+
+- [ ] **Step 1: Track SD/RTC init status**
+
+```cpp
+// GSE Management Unit/src/main.cpp -- near the top, with other globals:
+bool sd_ok  = false;   // set in setup(); used for CAN_GET_HEALTH_STATUS
+bool rtc_ok = false;   // set in setup(); used for CAN_GET_HEALTH_STATUS
+
+// In setup(), wherever SD.begin(...) and RT_Clock.begin() are currently
+// called, capture their return values into sd_ok/rtc_ok respectively
+// (the existing code already branches on these calls for
+// scrollMessage()/Post_Log_Message() purposes -- just also store the
+// boolean rather than only branching on it inline).
+```
+
+- [ ] **Step 2: Add the CAN_GET_HEALTH_STATUS case to Check_CAN()**
+
+```cpp
+// GSE Management Unit/src/main.cpp -- add a case to the switch(frame.command)
+// block in Check_CAN() (Task 3), alongside CAN_ABORT_FILL:
+
+        case CAN_GET_HEALTH_STATUS:
+        {
+            uint16_t bits = 0;
+            if( !sd_ok )                                        bits |= HEALTH_SD_INIT_FAIL;
+            if( !rtc_ok )                                        bits |= HEALTH_RTC_INIT_FAIL;
+            if( E_GPIO.digitalRead( GSEMU_LINK_SENSE_EIO ) == HIGH ) bits |= HEALTH_LINK_SENSE_LOST;
+            // HEALTH_GSEMU_FILL_VALVE_FAIL intentionally always 0 -- no
+            // fault detection implemented for the Fill valve in this plan.
+            Send_CAN_Response( source, CAN_GET_HEALTH_STATUS, true, (float)bits );
+            break;
+        }
+```
+
+- [ ] **Step 3: Verify it compiles**
+
+Run: `pio run`
+Expected: `SUCCESS`
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/main.cpp
+git commit -m "Add CAN_GET_HEALTH_STATUS response (SD/RTC/link-sense health)"
 ```
 
 ---
