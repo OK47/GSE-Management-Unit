@@ -74,6 +74,41 @@ Adafruit_PWMServoDriver Servos = Adafruit_PWMServoDriver();
 // CAN bus controller (SPI, Adafruit MCP2515 FeatherWing)
 Adafruit_MCP2515 CAN_Controller( CAN_CS_PIN );
 
+constexpr unsigned long CAN_RESPONSE_TIMEOUT_MS = 200;
+
+// Sends a CAN command frame to 'destination' and blocks (bounded by
+// CAN_RESPONSE_TIMEOUT_MS) waiting for its response. Returns false on
+// timeout (response_out is left untouched).
+bool Send_CAN_Command( uint8_t destination, CAN_Command command, float param,
+                        CAN_Response_Frame &response_out )
+{
+    CAN_Command_Frame frame;
+    frame.command = command;
+    frame.param   = param;
+
+    CAN_Controller.beginPacket( CAN_Pack_ID( destination, CAN_NODE_GSEMU ) );
+    CAN_Controller.write( (uint8_t *)&frame, sizeof( frame ) );
+    CAN_Controller.endPacket();
+
+    unsigned long start = millis();
+    while( millis() - start < CAN_RESPONSE_TIMEOUT_MS )
+    {
+        int packet_size = CAN_Controller.parsePacket();
+        if( packet_size <= 0 ) continue;
+
+        uint32_t id = CAN_Controller.packetId();
+        if( CAN_Unpack_Destination( id ) != CAN_NODE_GSEMU ) continue;
+        if( CAN_Unpack_Source( id )      != destination )     continue;
+
+        CAN_Controller.readBytes( (uint8_t *)&response_out, sizeof( response_out ) );
+        if( response_out.command != command ) continue;   // stray/unrelated response
+
+        return true;
+    }
+
+    return false;
+}
+
 // Fill valve  --  servo-actuated, now driven autonomously by GSEMU's own
 // CAN-orchestrated fill state machine (Task 4) rather than an EMU GPIO
 // handshake. Hardware constants from KJO_Valve.h.
