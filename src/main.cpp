@@ -109,6 +109,66 @@ bool Send_CAN_Command( uint8_t destination, CAN_Command command, float param,
     return false;
 }
 
+// Defined in Task 4 (fill state machine).
+void  Fill_Set_Target( float target_lbm );
+bool  Fill_Begin();
+void  Fill_Abort();
+bool  Fill_Is_Complete();
+
+static void Send_CAN_Response( uint8_t destination, CAN_Command command, bool status, float r_val )
+{
+    CAN_Response_Frame resp;
+    resp.command = command;
+    resp.status  = status;
+    resp.r_val   = r_val;
+
+    CAN_Controller.beginPacket( CAN_Pack_ID( destination, CAN_NODE_GSEMU ) );
+    CAN_Controller.write( (uint8_t *)&resp, sizeof( resp ) );
+    CAN_Controller.endPacket();
+}
+
+void Check_CAN()
+{
+    int packet_size = CAN_Controller.parsePacket();
+    if( packet_size <= 0 ) return;
+
+    uint32_t id          = CAN_Controller.packetId();
+    uint8_t  destination = CAN_Unpack_Destination( id );
+    uint8_t  source      = CAN_Unpack_Source( id );
+
+    if( destination != CAN_NODE_GSEMU ) return;   // not addressed to us
+
+    CAN_Command_Frame frame;
+    CAN_Controller.readBytes( (uint8_t *)&frame, sizeof( frame ) );
+
+    switch( frame.command )
+    {
+        case CAN_SET_FILL_TARGET:
+            Fill_Set_Target( frame.param );
+            Send_CAN_Response( source, CAN_SET_FILL_TARGET, true, 0.0f );
+            break;
+
+        case CAN_BEGIN_FILL:
+            Send_CAN_Response( source, CAN_BEGIN_FILL, Fill_Begin(), 0.0f );
+            break;
+
+        case CAN_QUERY_FILL_STATUS:
+            Send_CAN_Response( source, CAN_QUERY_FILL_STATUS, Fill_Is_Complete(), 0.0f );
+            break;
+
+        case CAN_ABORT_FILL:
+            Fill_Abort();
+            Send_CAN_Response( source, CAN_ABORT_FILL, true, 0.0f );
+            break;
+
+        default:
+            // TARE / GET_BATTERY_VOLTAGE / REPORT_CURRENT_WEIGHT /
+            // BEGIN-STOP_WEIGHT_RECORDING / BEGIN-STOP_THRUST_RECORDING are
+            // LCMU-side commands -- not handled by GSEMU.
+            break;
+    }
+}
+
 // Fill valve  --  servo-actuated, now driven autonomously by GSEMU's own
 // CAN-orchestrated fill state machine (Task 4) rather than an EMU GPIO
 // handshake. Hardware constants from KJO_Valve.h.
@@ -336,6 +396,9 @@ void loop()
 
     // Poll AUX analog input; drive inverted output and log on state change
     Check_AUX_Input();
+
+    // Service CAN command dispatch (EMU -> GSEMU)
+    Check_CAN();
 }
 
 // -----------------------------------------------------------------------------
