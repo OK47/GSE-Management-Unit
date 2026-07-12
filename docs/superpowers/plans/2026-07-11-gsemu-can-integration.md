@@ -156,11 +156,13 @@ git commit -m "Add CAN bring-up; replace Slave_Valve with plain Valve; repurpose
 - Consumes: `CAN_Controller` (Task 1), `CAN_Command_Frame`/`CAN_Response_Frame`/`CAN_Pack_ID`/`CAN_Unpack_Destination`/`CAN_Unpack_Source` (`KJO_CAN_Command_Defs.h`).
 - Produces: `Send_CAN_Command( uint8_t destination, CAN_Command command, float param, CAN_Response_Frame &response_out )` returning `bool` — consumed by Task 4 (fill state machine) and Task 3 (relaying EMU's queries).
 
+**Correction (post-Task-4-review, user decision):** `CAN_RESPONSE_TIMEOUT_MS` is raised from 200ms to 500ms. This value doubles as the per-attempt timeout for Task 4's LCMU weight-poll retries (see Task 4's correction) — the user specified 500ms as the reasonable per-attempt window before counting a poll as a miss.
+
 - [ ] **Step 1: Add the helper to main.cpp**
 
 ```cpp
 // GSE Management Unit/src/main.cpp -- add below the CAN_Controller declaration
-constexpr unsigned long CAN_RESPONSE_TIMEOUT_MS = 200;
+constexpr unsigned long CAN_RESPONSE_TIMEOUT_MS = 500;   // bumped from 200ms -- see Task 4 correction
 
 // Sends a CAN command frame to 'destination' and blocks (bounded by
 // CAN_RESPONSE_TIMEOUT_MS) waiting for its response. Returns false on
@@ -219,6 +221,8 @@ git commit -m "Add Send_CAN_Command helper for GSEMU -> LCMU requests"
 - Consumes: `CAN_Controller` (Task 1), `Send_CAN_Command()` (Task 2).
 - Produces: `Check_CAN()` — called from `loop()`. Dispatches `CAN_SET_FILL_TARGET`, `CAN_BEGIN_FILL`, `CAN_QUERY_FILL_STATUS`, `CAN_ABORT_FILL` (all four addressed to GSEMU per the spec's command table). Forward-declares the fill-state-machine entry points defined in Task 4.
 
+**Correction (post-Task-4-review, user decision):** `Fill_Is_Complete()` (returning `bool`) is replaced by `Fill_Get_Status()` (returning the shared `Fill_Status` enum — `KJO_Shared_Libraries/KJO_CAN_Command_Defs.h`), so EMU can distinguish "target reached" from "gave up after repeated LCMU comms failures" instead of seeing both as the same signal. The `CAN_QUERY_FILL_STATUS` case below is updated to send the 3-state code in `r_val` instead of the bool in `status`.
+
 - [ ] **Step 1: Add the CAN dispatch loop**
 
 ```cpp
@@ -268,7 +272,7 @@ void Check_CAN()
             break;
 
         case CAN_QUERY_FILL_STATUS:
-            Send_CAN_Response( source, CAN_QUERY_FILL_STATUS, Fill_Is_Complete(), 0.0f );
+            Send_CAN_Response( source, CAN_QUERY_FILL_STATUS, true, (float)Fill_Get_Status() );
             break;
 
         case CAN_ABORT_FILL:
@@ -314,9 +318,11 @@ git commit -m "Add CAN command dispatch for SET_FILL_TARGET/BEGIN_FILL/QUERY_FIL
 
 **Interfaces:**
 - Consumes: `Send_CAN_Command()` (Task 2), `Fill_Valve` (Task 1: `open()`, `close()`, `isOpen()`, `isClosed()`).
-- Produces: `Fill_Set_Target()`, `Fill_Begin()`, `Fill_Abort()`, `Fill_Is_Complete()` (forward-declared in Task 3), `Check_Fill()` — called from `loop()`.
+- Produces: `Fill_Set_Target()`, `Fill_Begin()`, `Fill_Abort()`, `Fill_Get_Status()` (forward-declared in Task 3), `Check_Fill()` — called from `loop()`.
 
-- [ ] **Step 1: Add the fill state machine to main.cpp**
+**Correction (post-review, user decision):** the original code below had two gaps found by Task 4's review: (1) no safety net if LCMU stops responding to weight polls once the valve is open — the valve could stay open indefinitely; (2) `Fill_Is_Complete()`'s bool couldn't distinguish "target reached" from "aborted." Both are fixed in the code below:
+- `Fill_Is_Complete()` (bool) is replaced by `Fill_Get_Status()` (returns the shared `Fill_Status` enum: `FILL_STATUS_IN_PROGRESS` / `FILL_STATUS_COMPLETE` / `FILL_STATUS_ABORTED`).
+- `Check_Fill()` now counts consecutive failed weight polls; after 3 in a row (`FILL_MAX_CONSECUTIVE_POLL_FAILURES`), it auto-aborts (closes the valve, marks `FILL_STATUS_ABORTED`) rather than retrying forever. Each poll attempt's own bounded wait comes from `Send_CAN_Command`'s `CAN_RESPONSE_TIMEOUT_MS`, raised to 500ms in Task 2's correction — so worst case this triggers roughly 1.5s after LCMU goes silent. This status flows to EMU via its existing `CAN_QUERY_FILL_STATUS` polling, and from there to the RCU operator via `QUERY_FILL_STATUS`/`READ_VALVE_POSITION` (see the EMU CAN-integration plan's matching correction).
 
 ```cpp
 // GSE Management Unit/src/main.cpp -- add below the Check_CAN() block
@@ -326,14 +332,19 @@ git commit -m "Add CAN command dispatch for SET_FILL_TARGET/BEGIN_FILL/QUERY_FIL
 // stored the target). Runs entirely locally on GSEMU: tares LCMU, opens
 // the Fill valve, polls LCMU's current weight against the stored target,
 // and closes the valve itself the moment the target is reached -- no
-// further authorization from EMU is needed to close. EMU separately polls
-// Fill_Is_Complete() via CAN_QUERY_FILL_STATUS at a much lower rate.
-constexpr unsigned long FILL_POLL_INTERVAL_MS = 50;
+// further authorization from EMU is needed to close. If LCMU stops
+// responding to weight polls, the fill is auto-aborted (valve closed)
+// after FILL_MAX_CONSECUTIVE_POLL_FAILURES consecutive misses, rather
+// than leaving the valve open indefinitely. EMU separately polls
+// Fill_Get_Status() via CAN_QUERY_FILL_STATUS at a much lower rate.
+constexpr unsigned long FILL_POLL_INTERVAL_MS               = 50;
+constexpr uint8_t       FILL_MAX_CONSECUTIVE_POLL_FAILURES  = 3;
 
-float         fill_target_lbm   = 0.0f;
-bool          fill_active       = false;
-bool          fill_complete     = false;
-unsigned long last_fill_poll_ms = 0;
+float         fill_target_lbm         = 0.0f;
+bool          fill_active             = false;
+Fill_Status   fill_state              = FILL_STATUS_IN_PROGRESS;
+unsigned long last_fill_poll_ms       = 0;
+uint8_t       fill_consecutive_fails  = 0;
 
 void Fill_Set_Target( float target_lbm )
 {
@@ -352,9 +363,10 @@ bool Fill_Begin()
     }
 
     Fill_Valve.open();
-    fill_active       = true;
-    fill_complete     = false;
-    last_fill_poll_ms = millis();
+    fill_active            = true;
+    fill_state              = FILL_STATUS_IN_PROGRESS;
+    fill_consecutive_fails  = 0;
+    last_fill_poll_ms       = millis();
     Post_Log_Message( String( "[FILL] Started -- target " ) + String( fill_target_lbm, 2 ) + " lbm" );
     return true;
 }
@@ -364,19 +376,20 @@ void Fill_Abort()
     if( !fill_active ) return;
 
     Fill_Valve.close();
-    fill_active   = false;
-    fill_complete = true;
+    fill_active = false;
+    fill_state  = FILL_STATUS_ABORTED;
     Post_Log_Message( "[FILL] Aborted -- valve closed." );
 }
 
-bool Fill_Is_Complete()
+Fill_Status Fill_Get_Status()
 {
-    return fill_complete;
+    return fill_state;
 }
 
 // Call every loop() iteration. Non-blocking: polls LCMU at
 // FILL_POLL_INTERVAL_MS, closes the valve and marks complete once the
-// target is reached.
+// target is reached. Auto-aborts after FILL_MAX_CONSECUTIVE_POLL_FAILURES
+// consecutive missed polls rather than leaving the valve open forever.
 void Check_Fill()
 {
     if( !fill_active ) return;
@@ -388,15 +401,27 @@ void Check_Fill()
     CAN_Response_Frame weight_resp;
     if( !Send_CAN_Command( CAN_NODE_LCMU, CAN_REPORT_CURRENT_WEIGHT, 0.0f, weight_resp ) )
     {
-        Post_Log_Message( "[FILL] LCMU did not respond to weight poll." );
-        return;   // try again next interval rather than aborting on one missed poll
+        fill_consecutive_fails++;
+        Post_Log_Message( String( "[FILL] LCMU did not respond to weight poll (" )
+                         + String( fill_consecutive_fails ) + "/" + String( FILL_MAX_CONSECUTIVE_POLL_FAILURES ) + ")." );
+
+        if( fill_consecutive_fails >= FILL_MAX_CONSECUTIVE_POLL_FAILURES )
+        {
+            Fill_Valve.close();
+            fill_active = false;
+            fill_state  = FILL_STATUS_ABORTED;
+            Post_Log_Message( "[FILL] Aborted -- LCMU unreachable after 3 consecutive polls." );
+        }
+        return;   // try again next interval unless the threshold above just closed the valve
     }
+
+    fill_consecutive_fails = 0;
 
     if( weight_resp.r_val >= fill_target_lbm )
     {
         Fill_Valve.close();
-        fill_active   = false;
-        fill_complete = true;
+        fill_active = false;
+        fill_state  = FILL_STATUS_COMPLETE;
         Post_Log_Message( String( "[FILL] Target reached at " ) + String( weight_resp.r_val, 2 )
                          + " lbm -- valve closed." );
     }
