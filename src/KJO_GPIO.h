@@ -28,19 +28,21 @@ constexpr uint8_t AUX_IO_4_EIO = 11;   // Port B, pin B3  --  AUX connector 2, I
 constexpr uint8_t AUX_IO_5_EIO = 12;   // Port B, pin B4  --  AUX connector 3, I/O 5
 constexpr uint8_t AUX_IO_6_EIO = 13;   // Port B, pin B5  --  AUX connector 3, I/O 6
 
-// --- AUX 1: Fill valve handshake (EMU ↔ GSEMU) --------------------------------
+// --- AUX 1: GSEMU<->EMU link-disconnect sense --------------------------------
+// The wired Fill-valve command/status handshake once carried on these two
+// pins has been retired in favor of CAN-orchestrated fill control (see
+// docs/superpowers/specs/2026-07-11-lcmu-design.md). AUX_IO_1 is repurposed
+// as a link-disconnect sense line, using the same ground-reference
+// technique already used by RELEASE_STATE_EIO below: wired to EMU chassis
+// GND, so a physical disconnect is detected instantly and independently of
+// any CAN bus traffic or timeout logic.
 //
-// I/O 1 — Fill valve command (EMU OUTPUT → GSEMU INPUT_PULLUP):
-//   EMU drives this OUTPUT; GSEMU reads INPUT_PULLUP.
-//   LOW  = EMU commands fill valve OPEN.
-//   HIGH = EMU commands fill valve CLOSE / idle (safe default when disconnected).
-constexpr uint8_t FILL_VALVE_CMD_EIO    = AUX_IO_1_EIO;
+// I/O 1 — GSEMU<->EMU link sense (GSEMU INPUT_PULLUP <- EMU GND):
+//   LOW  = umbilical connector is physically connected.
+//   HIGH = umbilical connector has separated (INPUT_PULLUP floats HIGH).
+constexpr uint8_t GSEMU_LINK_SENSE_EIO  = AUX_IO_1_EIO;
 
-// I/O 2 — Fill valve status (GSEMU OUTPUT → EMU INPUT_PULLUP):
-//   GSEMU drives this OUTPUT; EMU reads INPUT_PULLUP.
-//   LOW  = fill valve is OPEN (filling).
-//   HIGH = fill valve is CLOSED.
-constexpr uint8_t FILL_VALVE_STATUS_EIO = AUX_IO_2_EIO;
+// AUX_IO_2 (formerly FILL_VALVE_STATUS_EIO) is currently unused.
 
 // --- AUX 2: Umbilical quick-release (EMU ↔ GSEMU) ----------------------------
 //

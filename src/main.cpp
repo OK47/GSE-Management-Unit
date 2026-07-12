@@ -35,10 +35,11 @@
 #include "KJO_GPIO.h"               // GPIO expander pins + Relay class
 #include "KJO_Valve.h"              // Valve base class + servo/motion constants
 #include "KJO_GSE_Display.h"        // OLED scrollMessage() + Find_Available_File()
-#include "KJO_Slave_Valve.h"        // GSEMU-side servo valve driven by EMU GPIO handshake
 #include "KJO_QR_Slave.h"           // GSEMU-side umbilical quick-release actuator
 #include <Adafruit_ADS1X15.h>
 #include "KJO_Analog.h"             // ADS1015 channel assignments, LiPo scale, AUX threshold
+#include <Adafruit_MCP2515.h>
+#include "KJO_CAN_Command_Defs.h"
 
 // --- Conditional serial console ----------------------------------------------
 // Uncomment to enable Serial output for debugging.
@@ -46,6 +47,12 @@
 
 // --- Platform identifier for this build --------------------------------------
 constexpr uint8_t PLATFORM = GSEMU_PLATFORM;
+
+// --- CAN bus configuration -----------------------------------------------------
+// CS pin: this plan's concrete starting value, subject to confirmation
+// once the CAN FeatherWing is physically wired -- see Global Constraints.
+// No INT pin is needed: this design polls parsePacket() from loop().
+constexpr uint8_t CAN_CS_PIN = 11;
 
 // --- Hardware object instantiation -------------------------------------------
 
@@ -64,14 +71,17 @@ Relay Buzzer = Relay( &E_GPIO, BUZZER_EIO );
 // PWM servo driver (I2C, Adafruit ServoWing)
 Adafruit_PWMServoDriver Servos = Adafruit_PWMServoDriver();
 
-// Fill valve  --  servo-actuated, driven by EMU GPIO handshake via Slave_Valve.
-// Hardware constants from KJO_Valve.h; GPIO pins from KJO_GPIO.h.
-Slave_Valve Fill_Valve( FILL_VALVE,
-                        FILL_VALVE_PWM, FILL_VALVE_PWM_OPEN, FILL_VALVE_PWM_CLOSE,
-                        FILL_VALVE_ANALOG_PIN, FILL_VALVE_POS_OPEN, FILL_VALVE_POS_CLOSED,
-                        FILL_VALVE_BALL_DIAMETER, FILL_VALVE_BORE_DIAMETER, FILL_VALVE_THROAT_DIAMETER,
-                        &Servos,
-                        &E_GPIO, FILL_VALVE_CMD_EIO, FILL_VALVE_STATUS_EIO );
+// CAN bus controller (SPI, Adafruit MCP2515 FeatherWing)
+Adafruit_MCP2515 CAN_Controller( CAN_CS_PIN );
+
+// Fill valve  --  servo-actuated, now driven autonomously by GSEMU's own
+// CAN-orchestrated fill state machine (Task 4) rather than an EMU GPIO
+// handshake. Hardware constants from KJO_Valve.h.
+Valve Fill_Valve( FILL_VALVE,
+                  FILL_VALVE_PWM, FILL_VALVE_PWM_OPEN, FILL_VALVE_PWM_CLOSE,
+                  FILL_VALVE_ANALOG_PIN, FILL_VALVE_POS_OPEN, FILL_VALVE_POS_CLOSED,
+                  FILL_VALVE_BALL_DIAMETER, FILL_VALVE_BORE_DIAMETER, FILL_VALVE_THROAT_DIAMETER,
+                  &Servos );
 
 // Umbilical quick-release servo  --  driven by EMU GPIO CMD edge (QR_Slave).
 // ⚠ QR_SERVO_PWM_HOLD / QR_SERVO_PWM_OPEN are placeholders — calibrate before use.
@@ -160,8 +170,8 @@ void setup()
     E_GPIO.pinMode(    BUTTON_A_EIO, INPUT_PULLUP );
     E_GPIO.pinMode(    BUTTON_B_EIO, INPUT_PULLUP );
     E_GPIO.pinMode(    BUTTON_C_EIO, INPUT_PULLUP );
-    // AUX_IO_1 (FILL_VALVE_CMD_EIO) and AUX_IO_2 (FILL_VALVE_STATUS_EIO) are
-    // configured by Slave_Valve::begin() called below with Fill_Valve.begin().
+    // AUX_IO_1 (GSEMU_LINK_SENSE_EIO) is configured below, near CAN bring-up.
+    // AUX_IO_2 is currently unused.
     // AUX_IO_3 (QR_CMD_EIO) and AUX_IO_4 (RELEASE_STATE_EIO) are
     // configured by QR_Release.begin() called below.
     // AUX_IO_5 (LAUNCH_ENABLE_EIO) and AUX_IO_6 (REMOTE_START_EIO) configured below.
@@ -238,9 +248,24 @@ void setup()
     analogReadResolution( 12 );
     scrollMessage( &Screen, "Analog 12 bits.", true );
 
-    // -- Fill valve (Slave_Valve: closes to known state, configures GPIO pins) --
+    // -- Fill valve (plain Valve: closes to known state) ------------------------
     Fill_Valve.begin();
     scrollMessage( &Screen, "Fill valve ready.", true );
+
+    // -- Link-disconnect sense (repurposed from the old Fill-valve handshake) --
+    E_GPIO.pinMode( GSEMU_LINK_SENSE_EIO, INPUT_PULLUP );
+
+    // -- CAN bus -----------------------------------------------------------
+    if( !CAN_Controller.begin( CAN_BAUDRATE ) )
+    {
+        Post_Log_Message( "[CAN] mcp.begin() FAILED" );
+        scrollMessage( &Screen, "CAN init FAILED", true );
+    }
+    else
+    {
+        Post_Log_Message( "[CAN] ready" );
+        scrollMessage( &Screen, "CAN ready.", true );
+    }
 
     // -- QR release servo (QR_Slave: sets servo to hold, configures CMD pin) --
     QR_Release.begin();
@@ -256,9 +281,6 @@ void loop()
 {
     // Service timed relay outputs
     Buzzer.update();
-
-    // Service Fill valve: check command bit and update servo + status bit
-    Fill_Valve.update();
 
     // Service QR release servo: follow CMD level, detect physical separation
     QR_Release.update();
