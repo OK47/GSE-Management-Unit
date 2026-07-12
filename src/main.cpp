@@ -74,7 +74,7 @@ Adafruit_PWMServoDriver Servos = Adafruit_PWMServoDriver();
 // CAN bus controller (SPI, Adafruit MCP2515 FeatherWing)
 Adafruit_MCP2515 CAN_Controller( CAN_CS_PIN );
 
-constexpr unsigned long CAN_RESPONSE_TIMEOUT_MS = 200;
+constexpr unsigned long CAN_RESPONSE_TIMEOUT_MS = 500;   // bumped from 200ms: doubles as Check_Fill()'s per-attempt weight-poll timeout
 
 // Sends a CAN command frame to 'destination' and blocks (bounded by
 // CAN_RESPONSE_TIMEOUT_MS) waiting for its response. Returns false on
@@ -110,10 +110,10 @@ bool Send_CAN_Command( uint8_t destination, CAN_Command command, float param,
 }
 
 // Defined in Task 4 (fill state machine).
-void  Fill_Set_Target( float target_lbm );
-bool  Fill_Begin();
-void  Fill_Abort();
-bool  Fill_Is_Complete();
+void        Fill_Set_Target( float target_lbm );
+bool        Fill_Begin();
+void        Fill_Abort();
+Fill_Status Fill_Get_Status();
 
 static void Send_CAN_Response( uint8_t destination, CAN_Command command, bool status, float r_val )
 {
@@ -153,7 +153,7 @@ void Check_CAN()
             break;
 
         case CAN_QUERY_FILL_STATUS:
-            Send_CAN_Response( source, CAN_QUERY_FILL_STATUS, Fill_Is_Complete(), 0.0f );
+            Send_CAN_Response( source, CAN_QUERY_FILL_STATUS, true, (float)Fill_Get_Status() );
             break;
 
         case CAN_ABORT_FILL:
@@ -218,14 +218,19 @@ void  Log_Config();
 // stored the target). Runs entirely locally on GSEMU: tares LCMU, opens
 // the Fill valve, polls LCMU's current weight against the stored target,
 // and closes the valve itself the moment the target is reached -- no
-// further authorization from EMU is needed to close. EMU separately polls
-// Fill_Is_Complete() via CAN_QUERY_FILL_STATUS at a much lower rate.
-constexpr unsigned long FILL_POLL_INTERVAL_MS = 50;
+// further authorization from EMU is needed to close. If LCMU stops
+// responding to weight polls, the fill is auto-aborted (valve closed)
+// after FILL_MAX_CONSECUTIVE_POLL_FAILURES consecutive misses, rather
+// than leaving the valve open indefinitely. EMU separately polls
+// Fill_Get_Status() via CAN_QUERY_FILL_STATUS at a much lower rate.
+constexpr unsigned long FILL_POLL_INTERVAL_MS               = 50;
+constexpr uint8_t       FILL_MAX_CONSECUTIVE_POLL_FAILURES  = 3;
 
-float         fill_target_lbm   = 0.0f;
-bool          fill_active       = false;
-bool          fill_complete     = false;
-unsigned long last_fill_poll_ms = 0;
+float         fill_target_lbm         = 0.0f;
+bool          fill_active             = false;
+Fill_Status   fill_state              = FILL_STATUS_IN_PROGRESS;
+unsigned long last_fill_poll_ms       = 0;
+uint8_t       fill_consecutive_fails  = 0;
 
 void Fill_Set_Target( float target_lbm )
 {
@@ -244,9 +249,10 @@ bool Fill_Begin()
     }
 
     Fill_Valve.open();
-    fill_active       = true;
-    fill_complete     = false;
-    last_fill_poll_ms = millis();
+    fill_active            = true;
+    fill_state              = FILL_STATUS_IN_PROGRESS;
+    fill_consecutive_fails  = 0;
+    last_fill_poll_ms       = millis();
     Post_Log_Message( String( "[FILL] Started -- target " ) + String( fill_target_lbm, 2 ) + " lbm" );
     return true;
 }
@@ -256,19 +262,20 @@ void Fill_Abort()
     if( !fill_active ) return;
 
     Fill_Valve.close();
-    fill_active   = false;
-    fill_complete = true;
+    fill_active = false;
+    fill_state  = FILL_STATUS_ABORTED;
     Post_Log_Message( "[FILL] Aborted -- valve closed." );
 }
 
-bool Fill_Is_Complete()
+Fill_Status Fill_Get_Status()
 {
-    return fill_complete;
+    return fill_state;
 }
 
 // Call every loop() iteration. Non-blocking: polls LCMU at
 // FILL_POLL_INTERVAL_MS, closes the valve and marks complete once the
-// target is reached.
+// target is reached. Auto-aborts after FILL_MAX_CONSECUTIVE_POLL_FAILURES
+// consecutive missed polls rather than leaving the valve open forever.
 void Check_Fill()
 {
     if( !fill_active ) return;
@@ -280,15 +287,27 @@ void Check_Fill()
     CAN_Response_Frame weight_resp;
     if( !Send_CAN_Command( CAN_NODE_LCMU, CAN_REPORT_CURRENT_WEIGHT, 0.0f, weight_resp ) )
     {
-        Post_Log_Message( "[FILL] LCMU did not respond to weight poll." );
-        return;   // try again next interval rather than aborting on one missed poll
+        fill_consecutive_fails++;
+        Post_Log_Message( String( "[FILL] LCMU did not respond to weight poll (" )
+                         + String( fill_consecutive_fails ) + "/" + String( FILL_MAX_CONSECUTIVE_POLL_FAILURES ) + ")." );
+
+        if( fill_consecutive_fails >= FILL_MAX_CONSECUTIVE_POLL_FAILURES )
+        {
+            Fill_Valve.close();
+            fill_active = false;
+            fill_state  = FILL_STATUS_ABORTED;
+            Post_Log_Message( "[FILL] Aborted -- LCMU unreachable after 3 consecutive polls." );
+        }
+        return;   // try again next interval unless the threshold above just closed the valve
     }
+
+    fill_consecutive_fails = 0;
 
     if( weight_resp.r_val >= fill_target_lbm )
     {
         Fill_Valve.close();
-        fill_active   = false;
-        fill_complete = true;
+        fill_active = false;
+        fill_state  = FILL_STATUS_COMPLETE;
         Post_Log_Message( String( "[FILL] Target reached at " ) + String( weight_resp.r_val, 2 )
                          + " lbm -- valve closed." );
     }
