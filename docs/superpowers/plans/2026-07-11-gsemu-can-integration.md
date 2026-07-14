@@ -12,8 +12,8 @@
 
 - CAN bus: 250 kbps, MCP2515 crystal 16 MHz (library default).
 - Node IDs: EMU=1, GSEMU=2, LCMU=3. `CAN_ID = (destination << 4) | source` (`KJO_CAN_Command_Defs.h`).
-- Polling only, no INT pin needed (same rationale as the EMU plan — `parsePacket()` from `loop()`, `onReceive()` never called).
-- `CAN_CS_PIN` is a concrete starting value in this plan (see Task 1), subject to confirmation once GSEMU's CAN FeatherWing is physically wired — GSEMU's pin budget is less constrained than EMU's per prior discussion, but the exact pin is still hardware-dependent.
+- Polling only: firmware never reads the INT pin (same rationale as the EMU plan — `parsePacket()` from `loop()`, `onReceive()` never called). It's wired for consistency with EMU/LCMU and left available for future interrupt-driven use.
+- **Confirmed hardware pins (post hardware bring-up):** `CAN_CS_PIN = 0` (wired to RX/D0) and `CAN_INT_PIN = 13`, matching the same pins used on EMU and LCMU for consistency across all three boards. GPIO 13 is also this board's onboard LED (`LED_BUILTIN`); nothing in this firmware drives that LED, so no conflict.
 - Retiring the wired Fill-valve handshake frees `FILL_VALVE_CMD_EIO` (MCP23X17 AUX_IO_1) and `FILL_VALVE_STATUS_EIO` (AUX_IO_2) in GSEMU's own `KJO_GPIO.h` (a separate file from EMU's, not shared). This plan repurposes AUX_IO_1 as `GSEMU_LINK_SENSE_EIO`, wired to EMU chassis GND — the same technique already used by `RELEASE_STATE_EIO` (`KJO_GPIO.h:53-57`). AUX_IO_2 is left unused.
 - Fill target units: lbm, carried over CAN as `CAN_Command_Frame.param` (a `float`, no scaling needed — unlike the LoRa `Command_Payload.param` used between RCU/EMU, the CAN frame's param field is already a native float).
 - Weight-reached comparison: GSEMU polls LCMU's `CAN_REPORT_CURRENT_WEIGHT` and compares the returned value against the stored target directly (no tolerance/hysteresis band — the spec calls the resulting overshoot from CAN-speed polling "vanishingly small" against the fill quantities involved).
@@ -104,10 +104,15 @@ no replacement call is needed here.
 #include <Adafruit_MCP2515.h>
 #include "KJO_CAN_Command_Defs.h"
 
-// CS pin: this plan's concrete starting value, subject to confirmation
-// once the CAN FeatherWing is physically wired -- see Global Constraints.
-// No INT pin is needed: this design polls parsePacket() from loop().
-constexpr uint8_t CAN_CS_PIN = 11;
+// CS is wired to RX (D0); confirmed hardware pin, same convention used on
+// EMU and LCMU for consistency across all three boards. This design polls
+// parsePacket() from loop() and never calls onReceive(), so CAN_INT_PIN is
+// not read by firmware -- it's wired for consistency with the other two
+// boards and left available for future interrupt-driven use. GPIO 13 is
+// also this board's onboard LED (LED_BUILTIN); nothing in this firmware
+// drives that LED, so no conflict.
+constexpr uint8_t CAN_CS_PIN  = 0;
+constexpr uint8_t CAN_INT_PIN = 13;
 
 Adafruit_MCP2515 CAN_Controller( CAN_CS_PIN );
 
@@ -584,8 +589,10 @@ git commit -m "Add CAN_GET_HEALTH_STATUS response (SD/RTC/link-sense health)"
 
 ## Deferred to hardware bring-up (not part of this plan)
 
-- Confirming/correcting `CAN_CS_PIN` once the CAN FeatherWing is
-  physically wired to GSEMU.
+- ~~Confirming/correcting `CAN_CS_PIN` once the CAN FeatherWing is
+  physically wired to GSEMU.~~ Resolved during hardware bring-up:
+  `CAN_CS_PIN = 0` (RX/D0), `CAN_INT_PIN = 13`, matching EMU and LCMU
+  for consistency across all three boards.
 - EMU CAN integration (separate plan) and LCMU core firmware (separate
   plan) — this plan assumes both exist and speak the same
   `KJO_CAN_Command_Defs.h` protocol.

@@ -49,10 +49,15 @@
 constexpr uint8_t PLATFORM = GSEMU_PLATFORM;
 
 // --- CAN bus configuration -----------------------------------------------------
-// CS pin: this plan's concrete starting value, subject to confirmation
-// once the CAN FeatherWing is physically wired -- see Global Constraints.
-// No INT pin is needed: this design polls parsePacket() from loop().
-constexpr uint8_t CAN_CS_PIN = 11;
+// CS is wired to RX (D0); confirmed hardware pin, same convention used on
+// EMU and LCMU for consistency across all three boards. This design polls
+// parsePacket() from loop() and never calls onReceive(), so CAN_INT_PIN is
+// not read by firmware -- it's wired for consistency with the other two
+// boards and left available for future interrupt-driven use. GPIO 13 is
+// also this board's onboard LED (LED_BUILTIN); nothing in this firmware
+// drives that LED, so no conflict.
+constexpr uint8_t CAN_CS_PIN  = 0;
+constexpr uint8_t CAN_INT_PIN = 13;
 
 // --- Hardware object instantiation -------------------------------------------
 
