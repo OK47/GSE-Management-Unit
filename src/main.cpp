@@ -113,44 +113,11 @@ constexpr unsigned long CAN_RESPONSE_TIMEOUT_MS = 500;   // bumped from 200ms: d
 bool sd_ok  = false;   // set in setup(); used for CAN_GET_HEALTH_STATUS
 bool rtc_ok = false;   // set in setup(); used for CAN_GET_HEALTH_STATUS
 
-// Sends a CAN command frame to 'destination' and blocks (bounded by
-// CAN_RESPONSE_TIMEOUT_MS) waiting for its response. Returns false on
-// timeout (response_out is left untouched).
-bool Send_CAN_Command( uint8_t destination, CAN_Command command, float param,
-                        CAN_Response_Frame &response_out )
-{
-    CAN_Command_Frame frame;
-    frame.command = command;
-    frame.param   = param;
-
-    CAN_Controller.beginPacket( CAN_Pack_ID( destination, CAN_NODE_GSEMU ) );
-    CAN_Controller.write( (uint8_t *)&frame, sizeof( frame ) );
-    CAN_Controller.endPacket();
-
-    unsigned long start = millis();
-    while( millis() - start < CAN_RESPONSE_TIMEOUT_MS )
-    {
-        int packet_size = CAN_Controller.parsePacket();
-        if( packet_size <= 0 ) continue;
-
-        uint32_t id = CAN_Controller.packetId();
-        if( CAN_Unpack_Destination( id ) != CAN_NODE_GSEMU ) continue;
-        if( CAN_Unpack_Source( id )      != destination )     continue;
-
-        CAN_Controller.readBytes( (uint8_t *)&response_out, sizeof( response_out ) );
-        if( response_out.command != command ) continue;   // stray/unrelated response
-
-        return true;
-    }
-
-    return false;
-}
-
-// Defined in Task 4 (fill state machine). 'source' plumbed through
-// Fill_Begin() so Task 5 can route its deferred tare reply back to
-// whichever node requested BEGIN_FILL; unused for now.
+// Defined in Task 4 (fill state machine). 'reply_to' plumbed through
+// Fill_Begin() so its deferred tare reply can be routed back to
+// whichever node requested BEGIN_FILL -- see Advance_Pending_Fill_Operations().
 void        Fill_Set_Target( float target_lbm );
-bool        Fill_Begin( uint8_t source );
+void        Fill_Begin( uint8_t reply_to );
 void        Fill_Abort();
 Fill_Status Fill_Get_Status();
 
@@ -185,11 +152,12 @@ static void Send_CAN_Response( uint8_t destination, CAN_Command command, bool st
 }
 
 // Advances Fill_Begin()'s deferred tare reply and Check_Fill()'s
-// recurring weight poll -- filled in fully in the next task. Declared
-// here (empty) so this task's Check_CAN() conversion compiles and is
-// independently reviewable before Fill_Begin()/Check_Fill() themselves
-// change.
-static void Advance_Pending_Fill_Operations() {}
+// recurring weight poll. Called every Check_CAN() tick regardless of
+// whether a frame arrived, since Can.requestState()'s timeout can elapse
+// on a tick with no inbound traffic at all. Defined after the fill state
+// machine (near Check_Fill()) since it needs Fill_Valve and the fill_*
+// globals declared there; forward-declared here so Check_CAN() can call it.
+static void Advance_Pending_Fill_Operations();
 
 void Check_CAN()
 {
@@ -315,31 +283,31 @@ Fill_Status   fill_state              = FILL_STATUS_IN_PROGRESS;
 unsigned long last_fill_poll_ms       = 0;
 uint8_t       fill_consecutive_fails  = 0;
 
+bool    begin_fill_reply_pending = false;   // Fill_Begin()'s tare request is outstanding
+uint8_t begin_fill_reply_dest    = 0;       // node to send the deferred CAN_BEGIN_FILL reply to
+bool    check_fill_poll_pending  = false;   // Check_Fill()'s weight-poll request is outstanding
+
 void Fill_Set_Target( float target_lbm )
 {
     fill_target_lbm = target_lbm;
 }
 
-bool Fill_Begin( uint8_t source )
+// Kicks off the tare-then-open-valve sequence and defers the
+// CAN_BEGIN_FILL reply to reply_to until it resolves (successfully or
+// via timeout) -- see Advance_Pending_Fill_Operations(). Does not
+// return a success/failure value: the caller (Check_CAN()'s
+// CAN_BEGIN_FILL case) never blocks on the outcome.
+void Fill_Begin( uint8_t reply_to )
 {
-    (void)source;   // routed through for Task 5's deferred-reply chaining; unused for now
-
-    if( fill_active ) return true;   // already running
-
-    CAN_Response_Frame tare_resp;
-    if( !Send_CAN_Command( CAN_NODE_LCMU, CAN_TARE, 0.0f, tare_resp ) )
+    if( fill_active )
     {
-        Post_Log_Message( "[FILL] LCMU did not respond to tare -- fill not started." );
-        return false;
+        Send_CAN_Response( reply_to, CAN_BEGIN_FILL, true, 0.0f );   // already running
+        return;
     }
 
-    Fill_Valve.open();
-    fill_active            = true;
-    fill_state              = FILL_STATUS_IN_PROGRESS;
-    fill_consecutive_fails  = 0;
-    last_fill_poll_ms       = millis();
-    Post_Log_Message( String( "[FILL] Started -- target " ) + String( fill_target_lbm, 2 ) + " lbm" );
-    return true;
+    Can.sendRequest( CAN_NODE_LCMU, CAN_TARE, 0.0f );
+    begin_fill_reply_pending = true;
+    begin_fill_reply_dest    = reply_to;
 }
 
 void Fill_Abort()
@@ -363,14 +331,54 @@ Fill_Status Fill_Get_Status()
 // consecutive missed polls rather than leaving the valve open forever.
 void Check_Fill()
 {
-    if( !fill_active ) return;
+    if( !fill_active )         return;
+    if( check_fill_poll_pending ) return;   // Advance_Pending_Fill_Operations() (called from Check_CAN()) owns this poll until it resolves
 
     unsigned long now = millis();
     if( now - last_fill_poll_ms < FILL_POLL_INTERVAL_MS ) return;
     last_fill_poll_ms = now;
 
-    CAN_Response_Frame weight_resp;
-    if( !Send_CAN_Command( CAN_NODE_LCMU, CAN_REPORT_CURRENT_WEIGHT, 0.0f, weight_resp ) )
+    Can.sendRequest( CAN_NODE_LCMU, CAN_REPORT_CURRENT_WEIGHT, 0.0f );
+    check_fill_poll_pending = true;
+}
+
+// Advances Fill_Begin()'s deferred tare reply and Check_Fill()'s
+// recurring weight poll -- see the forward declaration near Check_CAN()
+// for why this is called every tick regardless of inbound traffic.
+static void Advance_Pending_Fill_Operations()
+{
+    if( begin_fill_reply_pending )
+    {
+        CAN_Request_State state = Can.requestState( CAN_RESPONSE_TIMEOUT_MS );
+
+        if( state == CAN_REQUEST_COMPLETE )
+        {
+            Fill_Valve.open();
+            fill_active            = true;
+            fill_state              = FILL_STATUS_IN_PROGRESS;
+            fill_consecutive_fails  = 0;
+            last_fill_poll_ms       = millis();
+            Post_Log_Message( String( "[FILL] Started -- target " ) + String( fill_target_lbm, 2 ) + " lbm" );
+            Send_CAN_Response( begin_fill_reply_dest, CAN_BEGIN_FILL, true, 0.0f );
+            begin_fill_reply_pending = false;
+        }
+        else if( state == CAN_REQUEST_TIMED_OUT )
+        {
+            Post_Log_Message( "[FILL] LCMU did not respond to tare -- fill not started." );
+            Send_CAN_Response( begin_fill_reply_dest, CAN_BEGIN_FILL, false, 0.0f );
+            begin_fill_reply_pending = false;
+        }
+        return;   // fill_active can't be true yet on this path -- no need to also check Check_Fill()'s poll below
+    }
+
+    if( !check_fill_poll_pending ) return;
+
+    CAN_Request_State state = Can.requestState( CAN_RESPONSE_TIMEOUT_MS );
+    if( state == CAN_REQUEST_PENDING ) return;
+
+    check_fill_poll_pending = false;
+
+    if( state == CAN_REQUEST_TIMED_OUT )
     {
         fill_consecutive_fails++;
         Post_Log_Message( String( "[FILL] LCMU did not respond to weight poll (" )
@@ -383,10 +391,12 @@ void Check_Fill()
             fill_state  = FILL_STATUS_ABORTED;
             Post_Log_Message( "[FILL] Aborted -- LCMU unreachable after 3 consecutive polls." );
         }
-        return;   // try again next interval unless the threshold above just closed the valve
+        return;
     }
 
+    // COMPLETE
     fill_consecutive_fails = 0;
+    const CAN_Response_Frame &weight_resp = Can.response();
 
     if( weight_resp.r_val >= fill_target_lbm )
     {
