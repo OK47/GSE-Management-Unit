@@ -551,6 +551,7 @@ void setup()
 
     Post_Log_Message( "[CAN] Waiting for EMU ping and LCMU response..." );
     scrollMessage( &Screen, "CAN: waiting...", true );
+    Post_Log_Message( String( "[TX] PING (" ) + String( CAN_PING ) + ") to node " + String( CAN_NODE_LCMU ) );
     Can.sendRequest( CAN_NODE_LCMU, CAN_PING, 0.0f );
     unsigned long last_lcmu_ping_ms = millis();
     while( !emu_pinged || !lcmu_pinged )
@@ -560,11 +561,13 @@ void setup()
 
         if( !lcmu_pinged && Can.requestState( 1000 ) == CAN_REQUEST_TIMED_OUT )
         {
+            Post_Log_Message( String( "[TX] PING (" ) + String( CAN_PING ) + ") to node " + String( CAN_NODE_LCMU ) );
             Can.sendRequest( CAN_NODE_LCMU, CAN_PING, 0.0f );
             last_lcmu_ping_ms = millis();
         }
         if( !lcmu_pinged && Can.requestState( 1000 ) == CAN_REQUEST_COMPLETE )
         {
+            Post_Log_Message( String( "[RX] PING (" ) + String( CAN_PING ) + ") response from node " + String( CAN_NODE_LCMU ) );
             lcmu_pinged = true;
         }
     }
