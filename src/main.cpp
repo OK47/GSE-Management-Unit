@@ -40,6 +40,7 @@
 #include "KJO_Analog.h"             // ADS1015 channel assignments, LiPo scale, AUX threshold
 #include <Adafruit_MCP2515.h>
 #include "KJO_CAN_Command_Defs.h"
+#include "KJO_CAN_Client.h"
 
 // --- Conditional serial console ----------------------------------------------
 // Uncomment to enable Serial output for debugging.
@@ -78,6 +79,33 @@ Adafruit_PWMServoDriver Servos = Adafruit_PWMServoDriver();
 
 // CAN bus controller (SPI, Adafruit MCP2515 FeatherWing)
 Adafruit_MCP2515 CAN_Controller( CAN_CS_PIN );
+
+// Thin adapter so KJO_CAN_Client (hardware-independent) can drive this
+// project's own CAN_Controller instance.
+class MCP2515_Transport : public CAN_Transport
+{
+    public:
+        void send( uint32_t id, const uint8_t *data, size_t len ) override
+        {
+            CAN_Controller.beginPacket( id );
+            CAN_Controller.write( data, len );
+            CAN_Controller.endPacket();
+        }
+
+        int parsePacket() override { return CAN_Controller.parsePacket(); }
+
+        uint32_t packetId() override { return CAN_Controller.packetId(); }
+
+        void readInto( uint8_t *buf, size_t len ) override
+        {
+            CAN_Controller.readBytes( buf, len );
+        }
+};
+
+MCP2515_Transport Transport;
+CAN_Client        Can( Transport, CAN_NODE_GSEMU );
+bool               emu_pinged  = false;   // set once EMU's boot-time CAN_PING is received
+bool               lcmu_pinged = false;   // set once LCMU responds to our boot-time CAN_PING
 
 constexpr unsigned long CAN_RESPONSE_TIMEOUT_MS = 500;   // bumped from 200ms: doubles as Check_Fill()'s per-attempt weight-poll timeout
 
@@ -118,11 +146,27 @@ bool Send_CAN_Command( uint8_t destination, CAN_Command command, float param,
     return false;
 }
 
-// Defined in Task 4 (fill state machine).
+// Defined in Task 4 (fill state machine). 'source' plumbed through
+// Fill_Begin() so Task 5 can route its deferred tare reply back to
+// whichever node requested BEGIN_FILL; unused for now.
 void        Fill_Set_Target( float target_lbm );
-bool        Fill_Begin();
+bool        Fill_Begin( uint8_t source );
 void        Fill_Abort();
 Fill_Status Fill_Get_Status();
+
+// Forward declaration needed here (ahead of its "Forward declarations"
+// block further down) since Send_CAN_Response() below now logs every TX
+// via Post_Log_Message(), whose full definition lives much later in the
+// file, near setup().
+void Post_Log_Message( String S );
+
+// Human-readable command name for logging -- bounds-checked since a
+// corrupted/noise frame could carry a command byte outside the defined
+// enum range, and CAN_Command_Name[] is not itself bounds-checked.
+static const char *CAN_Command_Name_Safe( CAN_Command command )
+{
+    return ( command <= CAN_MAX_COMMAND_CODE ) ? CAN_Command_Name[ command ] : "UNKNOWN";
+}
 
 static void Send_CAN_Response( uint8_t destination, CAN_Command command, bool status, float r_val )
 {
@@ -134,21 +178,34 @@ static void Send_CAN_Response( uint8_t destination, CAN_Command command, bool st
     CAN_Controller.beginPacket( CAN_Pack_ID( destination, CAN_NODE_GSEMU ) );
     CAN_Controller.write( (uint8_t *)&resp, sizeof( resp ) );
     CAN_Controller.endPacket();
+
+    Post_Log_Message( String( "[TX] " ) + CAN_Command_Name_Safe( command ) + " (" + String( command ) + ")"
+                     + " to node " + String( destination ) + " | status: " + ( status ? "OK" : "FAIL" )
+                     + " | r_val: " + String( r_val, 3 ) );
 }
+
+// Advances Fill_Begin()'s deferred tare reply and Check_Fill()'s
+// recurring weight poll -- filled in fully in the next task. Declared
+// here (empty) so this task's Check_CAN() conversion compiles and is
+// independently reviewable before Fill_Begin()/Check_Fill() themselves
+// change.
+static void Advance_Pending_Fill_Operations() {}
 
 void Check_CAN()
 {
-    int packet_size = CAN_Controller.parsePacket();
-    if( packet_size <= 0 ) return;
-
-    uint32_t id          = CAN_Controller.packetId();
-    uint8_t  destination = CAN_Unpack_Destination( id );
-    uint8_t  source      = CAN_Unpack_Source( id );
-
-    if( destination != CAN_NODE_GSEMU ) return;   // not addressed to us
-
     CAN_Command_Frame frame;
-    CAN_Controller.readBytes( (uint8_t *)&frame, sizeof( frame ) );
+    uint8_t            source;
+    CAN_Poll_Result    result = Can.poll( frame, source );
+
+    // Advance any pending outbound operation regardless of what poll()
+    // just returned -- a timeout can occur even on a tick where no
+    // frame arrived at all.
+    Advance_Pending_Fill_Operations();
+
+    if( result != CAN_POLL_INBOUND_REQUEST ) return;
+
+    Post_Log_Message( String( "[RX] " ) + CAN_Command_Name_Safe( frame.command ) + " (" + String( frame.command ) + ")"
+                     + " from node " + String( source ) + " | param: " + String( frame.param, 3 ) );
 
     switch( frame.command )
     {
@@ -158,7 +215,7 @@ void Check_CAN()
             break;
 
         case CAN_BEGIN_FILL:
-            Send_CAN_Response( source, CAN_BEGIN_FILL, Fill_Begin(), 0.0f );
+            Fill_Begin( source );   // deferred reply -- see Task 5
             break;
 
         case CAN_QUERY_FILL_STATUS:
@@ -181,6 +238,11 @@ void Check_CAN()
             Send_CAN_Response( source, CAN_GET_HEALTH_STATUS, true, (float)bits );
             break;
         }
+
+        case CAN_PING:
+            if( source == CAN_NODE_EMU ) emu_pinged = true;
+            Send_CAN_Response( source, CAN_PING, true, 0.0f );
+            break;
 
         default:
             // TARE / GET_BATTERY_VOLTAGE / REPORT_CURRENT_WEIGHT /
@@ -258,8 +320,10 @@ void Fill_Set_Target( float target_lbm )
     fill_target_lbm = target_lbm;
 }
 
-bool Fill_Begin()
+bool Fill_Begin( uint8_t source )
 {
+    (void)source;   // routed through for Task 5's deferred-reply chaining; unused for now
+
     if( fill_active ) return true;   // already running
 
     CAN_Response_Frame tare_resp;
@@ -484,6 +548,28 @@ void setup()
         Post_Log_Message( "[CAN] ready" );
         scrollMessage( &Screen, "CAN ready.", true );
     }
+
+    Post_Log_Message( "[CAN] Waiting for EMU ping and LCMU response..." );
+    scrollMessage( &Screen, "CAN: waiting...", true );
+    Can.sendRequest( CAN_NODE_LCMU, CAN_PING, 0.0f );
+    unsigned long last_lcmu_ping_ms = millis();
+    while( !emu_pinged || !lcmu_pinged )
+    {
+        Check_CAN();   // services both roles: answers EMU's inbound ping,
+                        // and advances/reports Can's pending LCMU ping
+
+        if( !lcmu_pinged && Can.requestState( 1000 ) == CAN_REQUEST_TIMED_OUT )
+        {
+            Can.sendRequest( CAN_NODE_LCMU, CAN_PING, 0.0f );
+            last_lcmu_ping_ms = millis();
+        }
+        if( !lcmu_pinged && Can.requestState( 1000 ) == CAN_REQUEST_COMPLETE )
+        {
+            lcmu_pinged = true;
+        }
+    }
+    Post_Log_Message( "[CAN] EMU answered, LCMU responded -- both confirmed present." );
+    scrollMessage( &Screen, "CAN: 3 nodes up.", true );
 
     // -- QR release servo (QR_Slave: sets servo to hold, configures CMD pin) --
     QR_Release.begin();
