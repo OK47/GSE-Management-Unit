@@ -299,9 +299,9 @@ void Fill_Set_Target( float target_lbm )
 // CAN_BEGIN_FILL case) never blocks on the outcome.
 void Fill_Begin( uint8_t reply_to )
 {
-    if( fill_active )
+    if( fill_active || begin_fill_reply_pending )
     {
-        Send_CAN_Response( reply_to, CAN_BEGIN_FILL, true, 0.0f );   // already running
+        Send_CAN_Response( reply_to, CAN_BEGIN_FILL, true, 0.0f );   // already running or already starting
         return;
     }
 
@@ -312,6 +312,18 @@ void Fill_Begin( uint8_t reply_to )
 
 void Fill_Abort()
 {
+    if( begin_fill_reply_pending )
+    {
+        // A BEGIN_FILL tare request is still in flight -- cancel it
+        // (its eventual response/timeout is ignored, see
+        // Advance_Pending_Fill_Operations()) and tell the original
+        // BEGIN_FILL requester it did not succeed, since the operator
+        // aborted before the fill ever actually started.
+        Send_CAN_Response( begin_fill_reply_dest, CAN_BEGIN_FILL, false, 0.0f );
+        begin_fill_reply_pending = false;
+    }
+    check_fill_poll_pending = false;   // ignore any in-flight weight-poll result -- this function is authoritative
+
     if( !fill_active ) return;
 
     Fill_Valve.close();
