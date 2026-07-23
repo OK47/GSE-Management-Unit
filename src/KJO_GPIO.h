@@ -58,21 +58,6 @@ constexpr uint8_t QR_CMD_EIO           = AUX_IO_3_EIO;
 //   HIGH = umbilical connector has separated (INPUT_PULLUP floats HIGH).
 constexpr uint8_t RELEASE_STATE_EIO    = AUX_IO_4_EIO;
 
-// --- AUX 3: Remote launch enable and start (EMU ↔ GSEMU) ---------------------
-//
-// I/O 5 — Remote launch enable (EMU OUTPUT → GSEMU INPUT_PULLUP):
-//   GSEMU reads INPUT_PULLUP.
-//   LOW  = EMU has enabled remote engine start.
-//   HIGH = Remote start disabled (safe default when disconnected).
-constexpr uint8_t LAUNCH_ENABLE_EIO    = AUX_IO_5_EIO;
-
-// I/O 6 — Remote start command (GSEMU OUTPUT → EMU INPUT_PULLUP):
-//   GSEMU drives this OUTPUT; EMU reads INPUT_PULLUP.
-//   LOW  = GSEMU commands engine start (asserted when AUX A/D is HIGH AND
-//          LAUNCH_ENABLE_EIO is LOW).
-//   HIGH = Hold / no start (safe default when disconnected).
-constexpr uint8_t REMOTE_START_EIO     = AUX_IO_6_EIO;
-
 // --- QR servo hardware configuration -----------------------------------------
 // Calibrated March 2026 on the bench.
 constexpr uint8_t  QR_SERVO_PWM_CHANNEL = 0;       // PCA9685 channel 0

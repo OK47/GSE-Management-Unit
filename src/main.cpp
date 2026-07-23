@@ -127,6 +127,11 @@ Fill_Status Fill_Get_Status();
 // file, near setup().
 void Post_Log_Message( String S );
 
+// Forward declaration needed here since Check_CAN()'s CAN_ARM_LCO_WATCH
+// case (below) sets this flag; its actual definition lives further down,
+// near the other state globals (close to battery_display_ms).
+extern bool lco_watch_armed;
+
 // Human-readable command name for logging -- bounds-checked since a
 // corrupted/noise frame could carry a command byte outside the defined
 // enum range, and CAN_Command_Name[] is not itself bounds-checked.
@@ -149,6 +154,22 @@ static void Send_CAN_Response( uint8_t destination, CAN_Command command, bool st
     Post_Log_Message( String( "[TX] " ) + CAN_Command_Name_Safe( command ) + " (" + String( command ) + ")"
                      + " to node " + String( destination ) + " | status: " + ( status ? "OK" : "FAIL" )
                      + " | r_val: " + String( r_val, 3 ) );
+}
+
+// Fire-and-forget CAN send that bypasses Can/CAN_Client's single-outstanding-
+// request-per-node slot entirely -- safe to call regardless of whatever
+// request/response cycle Can may currently have in flight (e.g. an LCMU
+// fill-status poll). No delivery/acknowledgement confirmation. Mirrors
+// EMU's Send_CAN_Command_NoWait() (main.cpp).
+void Send_CAN_Command_NoWait( uint8_t destination, CAN_Command command, float param )
+{
+    CAN_Command_Frame frame;
+    frame.command = command;
+    frame.param   = param;
+
+    CAN_Controller.beginPacket( CAN_Pack_ID( destination, CAN_NODE_GSEMU ) );
+    CAN_Controller.write( (uint8_t *)&frame, sizeof( frame ) );
+    CAN_Controller.endPacket();
 }
 
 // Advances Fill_Begin()'s deferred tare reply and Check_Fill()'s
@@ -212,6 +233,12 @@ void Check_CAN()
             Send_CAN_Response( source, CAN_PING, true, 0.0f );
             break;
 
+        case CAN_ARM_LCO_WATCH:
+            lco_watch_armed = ( frame.param != 0 );
+            Post_Log_Message( String( "[RX] ARM_LCO_WATCH | " ) + ( lco_watch_armed ? "armed" : "disarmed" ) );
+            Send_CAN_Response( source, CAN_ARM_LCO_WATCH, true, 0.0f );
+            break;
+
         default:
             // TARE / GET_BATTERY_VOLTAGE / REPORT_CURRENT_WEIGHT /
             // BEGIN-STOP_WEIGHT_RECORDING / BEGIN-STOP_THRUST_RECORDING are
@@ -244,8 +271,11 @@ Adafruit_ADS1015 Analog_Inputs;
 // Battery voltage display timer
 long battery_display_ms = 0;
 
-// AUX analog input previous digital state (for edge detection in Check_AUX_Input())
-bool aux_prev_state = false;   // expected LOW at startup
+// Gates Check_LCO_Watch()'s sampling of AD_AUX_CHANNEL. Set true by
+// CAN_ARM_LCO_WATCH(param=1), cleared by CAN_ARM_LCO_WATCH(param=0) or by
+// Check_LCO_Watch() itself once it fires (single-shot). See
+// docs/superpowers/specs/2026-07-23-multi-source-ignition-design.md.
+bool lco_watch_armed = false;
 
 // QR separation event: latched true once umbilical separation has been logged.
 bool qr_sep_logged  = false;
@@ -261,8 +291,9 @@ void  Check_Buttons();
 void  Post_Log_Message( String S );
 float GSEMU_Battery_Voltage();
 void  Check_Battery();
-void  Check_AUX_Input();
+void  Check_LCO_Watch();
 void  Log_Config();
+void  Send_CAN_Command_NoWait( uint8_t destination, CAN_Command command, float param );
 
 // --- Fill state machine ---------------------------------------------------------
 // Armed by EMU's CAN_BEGIN_FILL (after CAN_SET_FILL_TARGET has already
@@ -476,7 +507,9 @@ void setup()
     // AUX_IO_2 is currently unused.
     // AUX_IO_3 (QR_CMD_EIO) and AUX_IO_4 (RELEASE_STATE_EIO) are
     // configured by QR_Release.begin() called below.
-    // AUX_IO_5 (LAUNCH_ENABLE_EIO) and AUX_IO_6 (REMOTE_START_EIO) configured below.
+    // AUX_IO_5 / AUX_IO_6 are currently unused (freed by the retired wired
+    // LCO remote-start mechanism -- see docs/superpowers/specs/2026-07-23-
+    // multi-source-ignition-design.md).
 
     // -- SD card ---------------------------------------------------------------
     sd_ok = SD.begin( CARD_CS );
@@ -524,24 +557,6 @@ void setup()
     }
     battery_display_ms = millis();
     scrollMessage( &Screen, "Analog ready.", true );
-
-    // -- Launch Enable input and Remote Start output ---------------------------
-    // LAUNCH_ENABLE_EIO (I/O 5): INPUT_PULLUP — reads EMU remote-start enable signal.
-    // REMOTE_START_EIO  (I/O 6): OUTPUT — drives engine start command to EMU.
-    //   Driven LOW only when AUX A/D input is HIGH AND LAUNCH_ENABLE reads LOW.
-    E_GPIO.pinMode(      LAUNCH_ENABLE_EIO, INPUT_PULLUP );
-    E_GPIO.pinMode(      REMOTE_START_EIO,  OUTPUT       );
-    {
-        int16_t aux_raw     = Analog_Inputs.readADC_SingleEnded( AD_AUX_CHANNEL );
-        aux_prev_state      = ( aux_raw >= AD_AUX_THRESHOLD );
-        bool launch_enabled = ( E_GPIO.digitalRead( LAUNCH_ENABLE_EIO ) == LOW );
-        E_GPIO.digitalWrite( REMOTE_START_EIO,
-                             ( aux_prev_state && launch_enabled ) ? LOW : HIGH );
-        Post_Log_Message( "AUX initial state: " + String( aux_prev_state ? "HIGH" : "LOW" ) );
-        Post_Log_Message( "Launch Enable: "
-                          + String( launch_enabled ? "ENABLED" : "DISABLED" ) );
-    }
-    scrollMessage( &Screen, "AUX ready.", true );
 
     // -- Servo wing ------------------------------------------------------------
     Servos.begin();
@@ -628,8 +643,8 @@ void loop()
     // Display battery voltage every BATTERY_DISPLAY_INTERVAL_MS (non-blocking)
     Check_Battery();
 
-    // Poll AUX analog input; drive inverted output and log on state change
-    Check_AUX_Input();
+    // Poll AUX analog input when armed for the LCO watch
+    Check_LCO_Watch();
 
     // Service CAN command dispatch (EMU -> GSEMU)
     Check_CAN();
@@ -753,38 +768,23 @@ void Check_Battery()
 }
 
 // -----------------------------------------------------------------------------
-// Called from loop() on every iteration.
-// Reads the AUX analog input (ADS1015 channel AD_AUX_CHANNEL) and thresholds it
-// to a digital HIGH/LOW state.  Logs AUX input transitions.
-//
-// Remote Start logic (gated):
-//   REMOTE_START_EIO is driven LOW only when BOTH:
-//     - AUX input is HIGH (above AD_AUX_THRESHOLD)
-//     - LAUNCH_ENABLE_EIO reads LOW (EMU has enabled remote start)
-//   Otherwise REMOTE_START_EIO is driven HIGH (hold / no start).
-//
-void Check_AUX_Input()
+// Called from loop() on every iteration. No-ops unless lco_watch_armed is
+// true (set by CAN_ARM_LCO_WATCH). Reads AUX analog input (ADS1015 channel
+// AD_AUX_CHANNEL) and, on crossing AD_AUX_THRESHOLD, sends CAN_LCO_TRIGGERED
+// to EMU (fire-and-forget, no reply expected) and clears lco_watch_armed
+// (single-shot). See docs/superpowers/specs/2026-07-23-multi-source-
+// ignition-design.md.
+void Check_LCO_Watch()
 {
-    int16_t raw            = Analog_Inputs.readADC_SingleEnded( AD_AUX_CHANNEL );
-    bool    curr_state     = ( raw >= AD_AUX_THRESHOLD );
-    bool    launch_enabled = ( E_GPIO.digitalRead( LAUNCH_ENABLE_EIO ) == LOW );
+    if( !lco_watch_armed ) return;
 
-    // Log AUX input state transitions
-    if( curr_state != aux_prev_state )
+    int16_t raw = Analog_Inputs.readADC_SingleEnded( AD_AUX_CHANNEL );
+    if( raw >= AD_AUX_THRESHOLD )
     {
-        String msg = String( "AUX: " )
-                   + ( aux_prev_state ? "HIGH" : "LOW" )
-                   + " -> "
-                   + ( curr_state     ? "HIGH" : "LOW" );
-        Post_Log_Message( msg );
-        scrollMessage( &Screen, msg, false );
-        aux_prev_state = curr_state;
+        Post_Log_Message( "[LCO] AUX input triggered -- sending LCO_TRIGGERED to EMU." );
+        Send_CAN_Command_NoWait( CAN_NODE_EMU, CAN_LCO_TRIGGERED, 0.0f );
+        lco_watch_armed = false;
     }
-
-    // Drive Remote Start: LOW = start commanded; HIGH = hold.
-    // Gated — only asserted when AUX input HIGH AND remote start is enabled.
-    E_GPIO.digitalWrite( REMOTE_START_EIO,
-                         ( curr_state && launch_enabled ) ? LOW : HIGH );
 }
 
 // -----------------------------------------------------------------------------
