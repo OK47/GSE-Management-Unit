@@ -126,6 +126,7 @@ Fill_Status Fill_Get_Status();
 // via Post_Log_Message(), whose full definition lives much later in the
 // file, near setup().
 void Post_Log_Message( String S );
+void Get_RTC_DateTime( uint16_t *date, uint16_t *time );
 
 // Forward declaration needed here since Check_CAN()'s CAN_ARM_LCO_WATCH
 // case (below) sets this flag; its actual definition lives further down,
@@ -511,20 +512,12 @@ void setup()
     // LCO remote-start mechanism -- see docs/superpowers/specs/2026-07-23-
     // multi-source-ignition-design.md).
 
-    // -- SD card ---------------------------------------------------------------
-    sd_ok = SD.begin( CARD_CS );
-    if( !sd_ok )
-    {
-        scrollMessage( &Screen, "SD card Failed.", true );
-    }
-    else
-    {
-        scrollMessage( &Screen, "SD card ready.", true );
-        log_file_name = Find_Available_File();
-        scrollMessage( &Screen, log_file_name, true );
-    }
-
-    // -- Real-time clock -------------------------------------------------------
+    // -- Real-time clock ---------------------------------------------------------
+    // Brought up before SD, with its file-timestamp callback registered
+    // immediately after -- otherwise the very first file created below
+    // (the boot log itself) would be stamped before any real time source
+    // exists, permanently wrong since FAT only sets a file's creation
+    // time once.
     rtc_ok = RT_Clock.begin();
     if( !rtc_ok )
     {
@@ -539,6 +532,21 @@ void setup()
     else
     {
         scrollMessage( &Screen, "RTC ready.", true );
+    }
+    SdFile::dateTimeCallback( Get_RTC_DateTime );
+
+    // -- SD card ---------------------------------------------------------------
+    sd_ok = SD.begin( CARD_CS );
+    if( !sd_ok )
+    {
+        scrollMessage( &Screen, "SD card Failed.", true );
+    }
+    else
+    {
+        scrollMessage( &Screen, "SD card ready.", true );
+        log_file_name = Find_Available_File();
+        Post_Log_Message( "GSEMU" );   // system-name header -- always the first line in the file
+        scrollMessage( &Screen, log_file_name, true );
     }
 
     // -- Buzzer ----------------------------------------------------------------
@@ -819,21 +827,49 @@ void Log_Config()
     Post_Log_Message( "[CFG] ==========================================" );
 }
 
+// Formats a wall-clock timestamp as MM/DD/YYYY HH:MM:SS.mmm. The PCF8523
+// only resolves whole seconds; ms_fraction (the millisecond field) comes
+// from millis() rather than the RTC.
+String Format_Timestamp( const DateTime &wall_time, unsigned long ms_fraction )
+{
+    char buf[24];
+    snprintf( buf, sizeof( buf ), "%02u/%02u/%04u %02u:%02u:%02u.%03lu",
+              wall_time.month(), wall_time.day(), wall_time.year(),
+              wall_time.hour(), wall_time.minute(), wall_time.second(),
+              ms_fraction % 1000 );
+    return String( buf );
+}
+
+// Convenience for immediate logging: current RTC wall time and current
+// millis() for the sub-second field. Falls back to a raw millis() count
+// if the RTC never initialized.
+String Format_Timestamp_Now()
+{
+    if( !rtc_ok ) return String( "millis:" ) + String( millis() );
+    return Format_Timestamp( RT_Clock.now(), millis() );
+}
+
+// SD file-timestamp source. This project's SD library (arduino-libraries/SD
+// 1.3.0) has no SD.setTimeCallback() -- the equivalent here is SdFile's own
+// static dateTimeCallback(), registered in setup(), which fills in
+// FAT-packed date/time fields directly. SdFile is already visible via
+// SD.h's own "utility/SdFat.h" include, so no new #include is needed.
+// Leaves *date/*time untouched (falling back to the library's own default)
+// if the RTC never initialized.
+void Get_RTC_DateTime( uint16_t *date, uint16_t *time )
+{
+    if( !rtc_ok ) return;
+    DateTime now = RT_Clock.now();
+    *date = FAT_DATE( now.year(), now.month(), now.day() );
+    *time = FAT_TIME( now.hour(), now.minute(), now.second() );
+}
+
 // -----------------------------------------------------------------------------
 // Appends a timestamped message to the SD card log file.
 // Also echoes to Serial when SERIAL_CONSOLE_OUTPUT is defined.
 void Post_Log_Message( String S )
 {
-    DateTime now = RT_Clock.now();
-    int hour = now.hour();
-    if( hour > 12 ) hour -= 12;
-
-    char h_string[4], m_string[4], s_string[4];
-    sprintf( h_string, "%2d",  hour          );
-    sprintf( m_string, "%02d", now.minute()  );
-    sprintf( s_string, "%02d", now.second()  );
-
-    String message = String(h_string) + ":" + String(m_string) + ":" + String(s_string) + " " + S;
+    String message = Format_Timestamp_Now() + " " + S;
 
 #ifdef SERIAL_CONSOLE_OUTPUT
     Serial.println( message );
