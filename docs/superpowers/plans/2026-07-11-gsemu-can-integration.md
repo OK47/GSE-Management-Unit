@@ -1,5 +1,11 @@
 # GSEMU CAN Integration Implementation Plan
 
+> **Note (2026-07-22):** The QR release command described in this plan
+> (`QR_CMD_EIO`/`RELEASE_STATE_EIO`, level-based CMD-line following in
+> `QR_Slave::update()`) has since been migrated to a CAN-based one-shot
+> command -- see `docs/superpowers/specs/2026-07-22-qr-can-release-
+> design.md` in KJO_Shared_Libraries for the current design.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Give GSEMU a CAN link to EMU/LCMU, retire the wired Fill-valve GPIO handshake, and make GSEMU autonomously drive the Fill valve to a target weight reported by LCMU, closing it itself once the target is reached — rather than waiting for an EMU-issued close.

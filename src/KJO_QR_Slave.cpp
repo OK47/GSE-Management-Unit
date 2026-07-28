@@ -2,30 +2,24 @@
 
 //
 // QR_Slave — GSEMU-side umbilical quick-release actuator.
-// Level-based command following with physical separation detection.
+// One-shot CAN-commanded release with physical separation detection.
 // See KJO_QR_Slave.h for full protocol description.
 //
 
 // --- Constructor -------------------------------------------------------------
 QR_Slave::QR_Slave( byte PWM_channel, int PWM_hold, int PWM_open,
                     uint16_t move_time_ms, Adafruit_PWMServoDriver *Servos,
-                    Adafruit_MCP23X17 *gpio, byte cmd_pin, byte state_pin )
+                    Adafruit_MCP23X17 *gpio, byte state_pin )
     : QR_Servo( PWM_channel, PWM_hold, PWM_open, move_time_ms, Servos ),
-      _gpio( gpio ), _cmd_pin( cmd_pin ), _state_pin( state_pin ),
-      _prev_state( LOW ), _separated( false ), _local_override( false )
+      _gpio( gpio ), _state_pin( state_pin ),
+      _prev_state( LOW ), _separated( false ), _local_override( false ),
+      _release_commanded( false )
 {
 }
 
 // --- begin() -----------------------------------------------------------------
-//
-// Configures the CMD and state pins, reads the initial state of the state line,
-// and commands the servo to HOLD (latch engaged).
-//
 void QR_Slave::begin()
 {
-    // CMD pin: INPUT_PULLUP — receives level command from EMU.
-    _gpio->pinMode( _cmd_pin,   INPUT_PULLUP );
-
     // State pin: INPUT_PULLUP — wired to EMU chassis GND.
     // Reads LOW when umbilical is connected, HIGH when separated.
     _gpio->pinMode( _state_pin, INPUT_PULLUP );
@@ -42,28 +36,19 @@ void QR_Slave::begin()
 //
 // Must be called from loop() on every iteration.
 //
-// Servo control (level-based):
-//   CMD LOW  + servo not already opening or open  → openServo()
-//   CMD HIGH + servo not already holding or held  → holdServo()
-//
-// Separation detection:
-//   Monitors the state line for a LOW → HIGH transition.
-//   Sets the _separated latch on first confirmed HIGH.
-//
 void QR_Slave::update()
 {
     // Update the servo's timed-move state machine.
     isMoving();
 
     // ── Servo command following ───────────────────────────────────────────────
-    // Local override (Button A held) takes priority over the CMD line.
-    // While _local_override is true the CMD line is ignored and the servo is
-    // commanded open regardless of what the EMU is driving.
-    bool cmd = _local_override ? LOW : _gpio->digitalRead( _cmd_pin );
+    // Local override (Button A held) or a latched release command both
+    // mean "open." Neither is ever un-set by the other -- see
+    // commandRelease()/localHold()'s doc comments in KJO_QR_Slave.h.
+    bool release = _local_override || _release_commanded;
 
-    if( cmd == LOW )
+    if( release )
     {
-        // CMD LOW: EMU commands latch open.
         // Only issue the command if we are not already opening or fully open.
         if( _servo_state != QR_Servo_State::MOVING_TO_OPEN &&
             _servo_state != QR_Servo_State::AT_OPEN )
@@ -73,7 +58,6 @@ void QR_Slave::update()
     }
     else
     {
-        // CMD HIGH (or disconnected pullup): hold latch.
         // Only issue the command if we are not already holding or fully held.
         if( _servo_state != QR_Servo_State::MOVING_TO_HOLD &&
             _servo_state != QR_Servo_State::AT_HOLD )
@@ -94,7 +78,15 @@ void QR_Slave::update()
     _prev_state = curr_state;
 }
 
-// --- State accessors ---------------------------------------------------------
+// --- Release command (CAN) ----------------------------------------------------
+
+// Permanent latch -- never cleared. See KJO_QR_Slave.h.
+void QR_Slave::commandRelease()
+{
+    _release_commanded = true;
+}
+
+// --- State accessors -----------------------------------------------------------
 
 // Returns true once the state line has gone HIGH (physical separation confirmed).
 // Latched — returns true for the remainder of the session after separation.
@@ -105,13 +97,13 @@ bool QR_Slave::isConnected() { return ( _gpio->digitalRead( _state_pin ) == LOW 
 
 // --- Local override ----------------------------------------------------------
 
-// Engage local release: servo opens on the next update() regardless of CMD line.
+// Engage local release: servo opens on the next update() regardless of the release latch.
 void QR_Slave::localRelease()
 {
     _local_override = true;
 }
 
-// Release local override: servo returns to following the CMD line on the next update().
+// Release local override: servo follows the release-commanded latch on the next update().
 void QR_Slave::localHold()
 {
     _local_override = false;

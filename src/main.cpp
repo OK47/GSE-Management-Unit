@@ -133,6 +133,11 @@ void Get_RTC_DateTime( uint16_t *date, uint16_t *time );
 // near the other state globals (close to battery_display_ms).
 extern bool lco_watch_armed;
 
+// Forward declaration needed here since Check_CAN()'s CAN_QR_RELEASE case
+// (below) calls commandRelease() on this object; its actual definition
+// lives further down, near the other hardware object instantiations.
+extern QR_Slave QR_Release;
+
 // Human-readable command name for logging -- bounds-checked since a
 // corrupted/noise frame could carry a command byte outside the defined
 // enum range, and CAN_Command_Name[] is not itself bounds-checked.
@@ -240,6 +245,13 @@ void Check_CAN()
             Send_CAN_Response( source, CAN_ARM_LCO_WATCH, true, 0.0f );
             break;
 
+        case CAN_QR_RELEASE:
+            QR_Release.commandRelease();
+            // No reply sent -- EMU sends this fire-and-forget via
+            // Send_CAN_Command_NoWait() and never reads one. See
+            // docs/superpowers/specs/2026-07-22-qr-can-release-design.md.
+            break;
+
         default:
             // TARE / GET_BATTERY_VOLTAGE / REPORT_CURRENT_WEIGHT /
             // BEGIN-STOP_WEIGHT_RECORDING / BEGIN-STOP_THRUST_RECORDING are
@@ -257,14 +269,14 @@ Valve Fill_Valve( FILL_VALVE,
                   FILL_VALVE_BALL_DIAMETER, FILL_VALVE_BORE_DIAMETER, FILL_VALVE_THROAT_DIAMETER,
                   &Servos );
 
-// Umbilical quick-release servo  --  driven by EMU GPIO CMD edge (QR_Slave).
+// Umbilical quick-release servo  --  commanded over CAN (CAN_QR_RELEASE), one-shot (QR_Slave).
 // ⚠ QR_SERVO_PWM_HOLD / QR_SERVO_PWM_OPEN are placeholders — calibrate before use.
 // Hardware constants from KJO_GPIO.h.
 QR_Slave QR_Release( QR_SERVO_PWM_CHANNEL,
                      QR_SERVO_PWM_HOLD, QR_SERVO_PWM_OPEN,
                      QR_SERVO_MOVE_MS,
                      &Servos,
-                     &E_GPIO, QR_CMD_EIO, RELEASE_STATE_EIO );
+                     &E_GPIO, QR_SENSE_EIO );
 
 // External ADS1015 12-bit ADC (I2C)
 Adafruit_ADS1015 Analog_Inputs;
@@ -506,8 +518,8 @@ void setup()
     E_GPIO.pinMode(    BUTTON_C_EIO, INPUT_PULLUP );
     // AUX_IO_1 (GSEMU_LINK_SENSE_EIO) is configured below, near CAN bring-up.
     // AUX_IO_2 is currently unused.
-    // AUX_IO_3 (QR_CMD_EIO) and AUX_IO_4 (RELEASE_STATE_EIO) are
-    // configured by QR_Release.begin() called below.
+    // AUX_IO_3 (QR_SENSE_EIO) is configured by QR_Release.begin() called
+    // below. AUX_IO_4 (formerly RELEASE_STATE_EIO) is retired and unused.
     // AUX_IO_5 / AUX_IO_6 are currently unused (freed by the retired wired
     // LCO remote-start mechanism -- see docs/superpowers/specs/2026-07-23-
     // multi-source-ignition-design.md).

@@ -44,19 +44,21 @@ constexpr uint8_t GSEMU_LINK_SENSE_EIO  = AUX_IO_1_EIO;
 
 // AUX_IO_2 (formerly FILL_VALVE_STATUS_EIO) is currently unused.
 
-// --- AUX 2: Umbilical quick-release (EMU ↔ GSEMU) ----------------------------
+// --- AUX 2: Umbilical quick-release sense (GSEMU ← EMU) ----------------------
 //
-// I/O 3 — QR release command (EMU OUTPUT → GSEMU INPUT_PULLUP):
-//   Level-based command.  GSEMU reads INPUT_PULLUP.
-//   LOW  = EMU commands latch OPEN (release umbilical).
-//   HIGH = EMU commands latch CLOSED / hold (safe default when disconnected).
-constexpr uint8_t QR_CMD_EIO           = AUX_IO_3_EIO;
-
-// I/O 4 — QR release state (GSEMU INPUT_PULLUP ← EMU GND connection):
+// The QR release command has moved to CAN (CAN_QR_RELEASE, fire-and-forget --
+// see KJO_QR_Slave.h); AUX connector 2's former CMD pin (I/O 3) is repurposed
+// as GSEMU's own local QR connection-sense line, mirroring EMU's QR_SENSE_EIO.
+// Kept as a dedicated wire (not CAN) so it works even without a live CAN link.
+//
+// I/O 3 — QR sense (GSEMU INPUT_PULLUP ← EMU chassis GND connection):
 //   GSEMU reads this as INPUT_PULLUP; it is wired to EMU chassis GND.
 //   LOW  = umbilical connector is physically connected (EMU GND holds it LOW).
 //   HIGH = umbilical connector has separated (INPUT_PULLUP floats HIGH).
-constexpr uint8_t RELEASE_STATE_EIO    = AUX_IO_4_EIO;
+constexpr uint8_t QR_SENSE_EIO         = AUX_IO_3_EIO;
+
+// I/O 4 (formerly RELEASE_STATE_EIO) is retired -- the sense function it used
+// to serve has consolidated onto QR_SENSE_EIO above. Free for future use.
 
 // --- QR servo hardware configuration -----------------------------------------
 // Calibrated March 2026 on the bench.
