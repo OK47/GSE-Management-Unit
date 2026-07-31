@@ -41,6 +41,8 @@
 #include <Adafruit_MCP2515.h>
 #include "KJO_CAN_Command_Defs.h"
 #include "KJO_CAN_Client.h"
+#include <KJO_Status.h>              // Tag, Log_Message()
+#include <KJO_Status_Display.h>      // Report_Status()
 
 // --- Conditional serial console ----------------------------------------------
 // Uncomment to enable Serial output for debugging.
@@ -486,15 +488,12 @@ void setup()
     Screen.clearDisplay();
     Screen.display();
 
-#ifdef SERIAL_CONSOLE_OUTPUT
-    Serial.println( "GSEMU starting." );
-#endif
-    scrollMessage( &Screen, "GSEMU starting.", true );
+    Report_Status( &Screen, Tag::SYS, "starting.", true );
 
 #ifdef SERIAL_CONSOLE_OUTPUT
     Serial.println( "Display ready." );
 #endif
-    scrollMessage( &Screen, "Display ready.", true );
+    Report_Status( &Screen, Tag::OLD, "ready.", true );
 
     // -- GPIO expansion board --------------------------------------------------
     if( !E_GPIO.begin_I2C() )
@@ -502,14 +501,14 @@ void setup()
 #ifdef SERIAL_CONSOLE_OUTPUT
         Serial.println( "Expansion I/O Error." );
 #endif
-        scrollMessage( &Screen, "Expansion I/O ERROR.", true );
+        Report_Status( &Screen, Tag::GPO, "ERROR.", true );
     }
     else
     {
 #ifdef SERIAL_CONSOLE_OUTPUT
         Serial.println( "Expansion I/O ready." );
 #endif
-        scrollMessage( &Screen, "Expansion I/O ready.", true );
+        Report_Status( &Screen, Tag::GPO, "ready.", true );
     }
 
     // Configure expansion I/O pins
@@ -533,17 +532,17 @@ void setup()
     rtc_ok = RT_Clock.begin();
     if( !rtc_ok )
     {
-        scrollMessage( &Screen, "RTC fail.", true );
+        Report_Status( &Screen, Tag::RTC, "fail.", true );
     }
     else if( RT_Clock.lostPower() )
     {
         // Set clock to sketch compile time if battery was lost
         RT_Clock.adjust( DateTime( F(__DATE__), F(__TIME__) ) );
-        scrollMessage( &Screen, "RTC time set.", true );
+        Report_Status( &Screen, Tag::RTC, "time set.", true );
     }
     else
     {
-        scrollMessage( &Screen, "RTC ready.", true );
+        Report_Status( &Screen, Tag::RTC, "ready.", true );
     }
     SdFile::dateTimeCallback( Get_RTC_DateTime );
 
@@ -551,19 +550,19 @@ void setup()
     sd_ok = SD.begin( CARD_CS );
     if( !sd_ok )
     {
-        scrollMessage( &Screen, "SD card Failed.", true );
+        Report_Status( &Screen, Tag::SDC, "init FAILED.", true );
     }
     else
     {
-        scrollMessage( &Screen, "SD card ready.", true );
+        Report_Status( &Screen, Tag::SDC, "init success.", true );
         log_file_name = Find_Available_File();
-        Post_Log_Message( "GSEMU" );   // system-name header -- always the first line in the file
-        scrollMessage( &Screen, log_file_name, true );
+        Log_Message( Tag::SYS, "GSEMU" );   // system-name header -- always the first line in the file
+        Report_Status( &Screen, Tag::SDC, log_file_name, true );
     }
 
     // -- Buzzer ----------------------------------------------------------------
     Buzzer.begin();
-    scrollMessage( &Screen, "Buzzer ready.", true );
+    Report_Status( &Screen, Tag::BUZ, "ready.", true );
     Test_Buzzer();
 
     // -- External ADC (ADS1015) ------------------------------------------------
@@ -571,25 +570,23 @@ void setup()
     Analog_Inputs.setGain( GAIN_ONE );
     {
         float   bat_v   = GSEMU_Battery_Voltage();
-        String  bat_msg = "Bat: " + String( bat_v, 2 ) + " V";
-        scrollMessage( &Screen, bat_msg, true );
-        Post_Log_Message( bat_msg );
+        Report_Status( &Screen, Tag::BAT, String( bat_v, 2 ) + " V", true );
     }
     battery_display_ms = millis();
-    scrollMessage( &Screen, "Analog ready.", true );
+    Report_Status( &Screen, Tag::ADC, "ready.", true );
 
     // -- Servo wing ------------------------------------------------------------
     Servos.begin();
     Servos.setPWMFreq( SERVO_FREQUENCY );
-    scrollMessage( &Screen, "Servos ready.", true );
+    Report_Status( &Screen, Tag::SER, "ready.", true );
 
     // -- Onboard ADC resolution ------------------------------------------------
     analogReadResolution( 12 );
-    scrollMessage( &Screen, "Analog 12 bits.", true );
+    Report_Status( &Screen, Tag::ADC, "12 bits.", true );
 
     // -- Fill valve (plain Valve: closes to known state) ------------------------
     Fill_Valve.begin();
-    scrollMessage( &Screen, "Fill valve ready.", true );
+    Report_Status( &Screen, Tag::FIL, "valve ready.", true );
 
     // -- Link-disconnect sense (repurposed from the old Fill-valve handshake) --
     E_GPIO.pinMode( GSEMU_LINK_SENSE_EIO, INPUT_PULLUP );
@@ -597,18 +594,15 @@ void setup()
     // -- CAN bus -----------------------------------------------------------
     if( !CAN_Controller.begin( CAN_BAUDRATE ) )
     {
-        Post_Log_Message( "[CAN] mcp.begin() FAILED" );
-        scrollMessage( &Screen, "CAN init FAILED", true );
+        Report_Status( &Screen, Tag::CAN, "init FAILED", true );
     }
     else
     {
-        Post_Log_Message( "[CAN] ready" );
-        scrollMessage( &Screen, "CAN ready.", true );
+        Report_Status( &Screen, Tag::CAN, "init success.", true );
     }
 
-    Post_Log_Message( "[CAN] Waiting for EMU ping and LCMU response..." );
-    scrollMessage( &Screen, "CAN: waiting...", true );
-    Post_Log_Message( String( "[TX] PING (" ) + String( CAN_PING ) + ") to node " + String( CAN_NODE_LCMU ) );
+    Report_Status( &Screen, Tag::CAN, "waiting...", true );
+    Log_Message( Tag::TXC, "PING (" + String(CAN_PING) + ") to node " + String(CAN_NODE_LCMU) );
     Can.sendRequest( CAN_NODE_LCMU, CAN_PING, 0.0f );
     unsigned long last_lcmu_ping_ms = millis();
     while( !emu_pinged || !lcmu_pinged )
@@ -618,25 +612,24 @@ void setup()
 
         if( !lcmu_pinged && Can.requestState( 1000 ) == CAN_REQUEST_TIMED_OUT )
         {
-            Post_Log_Message( String( "[TX] PING (" ) + String( CAN_PING ) + ") to node " + String( CAN_NODE_LCMU ) );
+            Log_Message( Tag::TXC, "PING (" + String(CAN_PING) + ") to node " + String(CAN_NODE_LCMU) );
             Can.sendRequest( CAN_NODE_LCMU, CAN_PING, 0.0f );
             last_lcmu_ping_ms = millis();
         }
         if( !lcmu_pinged && Can.requestState( 1000 ) == CAN_REQUEST_COMPLETE )
         {
-            Post_Log_Message( String( "[RX] PING (" ) + String( CAN_PING ) + ") response from node " + String( CAN_NODE_LCMU ) );
+            Log_Message( Tag::RXC, "PING (" + String(CAN_PING) + ") response from node " + String(CAN_NODE_LCMU) );
             lcmu_pinged = true;
         }
     }
-    Post_Log_Message( "[CAN] EMU answered, LCMU responded -- both confirmed present." );
-    scrollMessage( &Screen, "CAN: 3 nodes up.", true );
+    Report_Status( &Screen, Tag::CAN, "3 nodes up.", true );
 
     // -- QR release servo (QR_Slave: sets servo to hold, configures CMD pin) --
     QR_Release.begin();
-    scrollMessage( &Screen, "QR servo ready.", true );
+    Report_Status( &Screen, Tag::QRL, "servo ready.", true );
 
-    scrollMessage( &Screen, "GSEMU ready.", true );
-    Post_Log_Message( "GSEMU startup complete, version " + String( GSEMU_VERSION ) );
+    Report_Status( &Screen, Tag::SYS, "ready.", true );
+    Log_Message( Tag::SYS, "startup complete, version " + String( GSEMU_VERSION ) );
     Log_Config();
 }
 
