@@ -135,6 +135,15 @@ extern bool lco_watch_armed;
 // lives further down, near the other hardware object instantiations.
 extern QR_Slave QR_Release;
 
+// Forward declarations needed here since Check_CAN()'s CAN_OPEN_FILL_VALVE /
+// CAN_CLOSE_FILL_VALVE / CAN_GET_FILL_VALVE_POSITION cases (below) call
+// Fill_Valve directly, CAN_GET_GSEMU_BATTERY calls GSEMU_Battery_Voltage(),
+// and CAN_GET_LCO_STATE samples Analog_Inputs; their actual definitions
+// live further down, near the other hardware object instantiations.
+extern Valve       Fill_Valve;
+extern Adafruit_ADS1015 Analog_Inputs;
+float GSEMU_Battery_Voltage();
+
 // Human-readable command name for logging -- bounds-checked since a
 // corrupted/noise frame could carry a command byte outside the defined
 // enum range, and CAN_Command_Name[] is not itself bounds-checked.
@@ -248,6 +257,36 @@ void Check_CAN()
             // Send_CAN_Command_NoWait() and never reads one. See
             // docs/superpowers/specs/2026-07-22-qr-can-release-design.md.
             break;
+
+        case CAN_OPEN_FILL_VALVE:
+            Fill_Valve.open();
+            Send_CAN_Response( source, CAN_OPEN_FILL_VALVE, true, 0.0f );
+            Log_Message( Tag::FIL, "Direct valve open commanded (RCU_UNIT_TEST)." );
+            break;
+
+        case CAN_CLOSE_FILL_VALVE:
+            Fill_Valve.close();
+            Send_CAN_Response( source, CAN_CLOSE_FILL_VALVE, true, 0.0f );
+            Log_Message( Tag::FIL, "Direct valve close commanded (RCU_UNIT_TEST)." );
+            break;
+
+        case CAN_GET_GSEMU_BATTERY:
+            Send_CAN_Response( source, CAN_GET_GSEMU_BATTERY, true, GSEMU_Battery_Voltage() );
+            break;
+
+        case CAN_GET_FILL_VALVE_POSITION:
+            Send_CAN_Response( source, CAN_GET_FILL_VALVE_POSITION, true, (float)Fill_Valve.getPositionPercent() );
+            break;
+
+        case CAN_GET_LCO_STATE:
+        {
+            // Read-only: does NOT touch lco_watch_armed or trigger anything,
+            // unlike Check_LCO_Watch()'s armed-only crossing detection.
+            int  raw       = Analog_Inputs.readADC_SingleEnded( AD_AUX_CHANNEL );
+            bool lco_state = ( raw >= AD_AUX_THRESHOLD );
+            Send_CAN_Response( source, CAN_GET_LCO_STATE, true, lco_state ? 1.0f : 0.0f );
+            break;
+        }
 
         default:
             // TARE / GET_BATTERY_VOLTAGE / REPORT_CURRENT_WEIGHT /
