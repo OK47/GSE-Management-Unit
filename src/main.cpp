@@ -34,7 +34,7 @@
 #include "KJO_Logging.h"            // SD card CS, log file naming
 #include "KJO_GPIO.h"               // GPIO expander pins + Relay class
 #include "KJO_Valve.h"              // Valve base class + servo/motion constants
-#include "KJO_GSE_Display.h"        // OLED scrollMessage() + Find_Available_File()
+#include "KJO_GSE_Display.h"        // Find_Available_File()
 #include "KJO_QR_Slave.h"           // GSEMU-side umbilical quick-release actuator
 #include <Adafruit_ADS1X15.h>
 #include "KJO_Analog.h"             // ADS1015 channel assignments, LiPo scale, AUX threshold
@@ -123,11 +123,6 @@ void        Fill_Begin( uint8_t reply_to );
 void        Fill_Abort();
 Fill_Status Fill_Get_Status();
 
-// Forward declaration needed here (ahead of its "Forward declarations"
-// block further down) since Send_CAN_Response() below now logs every TX
-// via Post_Log_Message(), whose full definition lives much later in the
-// file, near setup().
-void Post_Log_Message( String S );
 void Get_RTC_DateTime( uint16_t *date, uint16_t *time );
 
 // Forward declaration needed here since Check_CAN()'s CAN_ARM_LCO_WATCH
@@ -159,7 +154,7 @@ static void Send_CAN_Response( uint8_t destination, CAN_Command command, bool st
     CAN_Controller.write( (uint8_t *)&resp, sizeof( resp ) );
     CAN_Controller.endPacket();
 
-    Post_Log_Message( String( "[TX] " ) + CAN_Command_Name_Safe( command ) + " (" + String( command ) + ")"
+    Log_Message( Tag::TXC, String( CAN_Command_Name_Safe( command ) ) + " (" + String( command ) + ")"
                      + " to node " + String( destination ) + " | status: " + ( status ? "OK" : "FAIL" )
                      + " | r_val: " + String( r_val, 3 ) );
 }
@@ -201,7 +196,7 @@ void Check_CAN()
 
     if( result != CAN_POLL_INBOUND_REQUEST ) return;
 
-    Post_Log_Message( String( "[RX] " ) + CAN_Command_Name_Safe( frame.command ) + " (" + String( frame.command ) + ")"
+    Log_Message( Tag::RXC, String( CAN_Command_Name_Safe( frame.command ) ) + " (" + String( frame.command ) + ")"
                      + " from node " + String( source ) + " | param: " + String( frame.param, 3 ) );
 
     switch( frame.command )
@@ -243,7 +238,7 @@ void Check_CAN()
 
         case CAN_ARM_LCO_WATCH:
             lco_watch_armed = ( frame.param != 0 );
-            Post_Log_Message( String( "[RX] ARM_LCO_WATCH | " ) + ( lco_watch_armed ? "armed" : "disarmed" ) );
+            Log_Message( Tag::RXC, "ARM_LCO_WATCH | " + String( lco_watch_armed ? "armed" : "disarmed" ) );
             Send_CAN_Response( source, CAN_ARM_LCO_WATCH, true, 0.0f );
             break;
 
@@ -303,7 +298,6 @@ String log_file_name;
 void  Test_Buzzer();
 void  Beep( short count );
 void  Check_Buttons();
-void  Post_Log_Message( String S );
 float GSEMU_Battery_Voltage();
 void  Check_Battery();
 void  Check_LCO_Watch();
@@ -375,7 +369,7 @@ void Fill_Abort()
     Fill_Valve.close();
     fill_active = false;
     fill_state  = FILL_STATUS_ABORTED;
-    Post_Log_Message( "[FILL] Aborted -- valve closed." );
+    Log_Message( Tag::FIL, "Aborted -- valve closed." );
 }
 
 Fill_Status Fill_Get_Status()
@@ -416,13 +410,13 @@ static void Advance_Pending_Fill_Operations()
             fill_state              = FILL_STATUS_IN_PROGRESS;
             fill_consecutive_fails  = 0;
             last_fill_poll_ms       = millis();
-            Post_Log_Message( String( "[FILL] Started -- target " ) + String( fill_target_lbm, 2 ) + " lbm" );
+            Log_Message( Tag::FIL, "Started -- target " + String( fill_target_lbm, 2 ) + " lbm" );
             Send_CAN_Response( begin_fill_reply_dest, CAN_BEGIN_FILL, true, 0.0f );
             begin_fill_reply_pending = false;
         }
         else if( state == CAN_REQUEST_TIMED_OUT )
         {
-            Post_Log_Message( "[FILL] LCMU did not respond to tare -- fill not started." );
+            Log_Message( Tag::FIL, "LCMU did not respond to tare -- fill not started." );
             Send_CAN_Response( begin_fill_reply_dest, CAN_BEGIN_FILL, false, 0.0f );
             begin_fill_reply_pending = false;
         }
@@ -439,7 +433,7 @@ static void Advance_Pending_Fill_Operations()
     if( state == CAN_REQUEST_TIMED_OUT )
     {
         fill_consecutive_fails++;
-        Post_Log_Message( String( "[FILL] LCMU did not respond to weight poll (" )
+        Log_Message( Tag::FIL, "LCMU did not respond to weight poll ("
                          + String( fill_consecutive_fails ) + "/" + String( FILL_MAX_CONSECUTIVE_POLL_FAILURES ) + ")." );
 
         if( fill_consecutive_fails >= FILL_MAX_CONSECUTIVE_POLL_FAILURES )
@@ -447,7 +441,7 @@ static void Advance_Pending_Fill_Operations()
             Fill_Valve.close();
             fill_active = false;
             fill_state  = FILL_STATUS_ABORTED;
-            Post_Log_Message( "[FILL] Aborted -- LCMU unreachable after 3 consecutive polls." );
+            Log_Message( Tag::FIL, "Aborted -- LCMU unreachable after 3 consecutive polls." );
         }
         return;
     }
@@ -461,7 +455,7 @@ static void Advance_Pending_Fill_Operations()
         Fill_Valve.close();
         fill_active = false;
         fill_state  = FILL_STATUS_COMPLETE;
-        Post_Log_Message( String( "[FILL] Target reached at " ) + String( weight_resp.r_val, 2 )
+        Log_Message( Tag::FIL, "Target reached at " + String( weight_resp.r_val, 2 )
                          + " lbm -- valve closed." );
     }
 }
@@ -645,8 +639,7 @@ void loop()
     // Log umbilical separation event once when first confirmed
     if( QR_Release.isSeparated() && !qr_sep_logged )
     {
-        Post_Log_Message( "QR: umbilical separated." );
-        scrollMessage( &Screen, "QR: Released", false );
+        Report_Status( &Screen, Tag::QRL, "umbilical separated.", false );
         qr_sep_logged = true;
     }
 
@@ -686,8 +679,9 @@ void Test_Buzzer()
 // Audible confirmation: 'count' short blocking beeps (100 ms on, 100 ms gap).
 //
 // Uses delay() and is therefore BLOCKING.  This is acceptable anywhere in this
-// application because scrollMessage() is also blocking, so loop() is already
-// interrupted during button-response sequences.  Beeps play before the scroll.
+// application because Report_Status()'s display update is also blocking, so
+// loop() is already interrupted during button-response sequences.  Beeps
+// play before the status update.
 void Beep( short count )
 {
     for( short i = 0; i < count; i++ )
@@ -722,16 +716,14 @@ void Check_Buttons()
     {
         // Falling edge: button pressed — engage local release
         Beep( 1 );
-        scrollMessage( &Screen, "QR: Releasing", false );
-        Post_Log_Message( "QR: Local release commanded." );
+        Report_Status( &Screen, Tag::QRL, "Local release commanded.", false );
         QR_Release.localRelease();
     }
     if( curr_A == HIGH && prev_A == LOW )
     {
         // Rising edge: button released — return servo to hold
         QR_Release.localHold();
-        Post_Log_Message( "QR: Local release complete." );
-        scrollMessage( &Screen, "QR: Hold", false );
+        Report_Status( &Screen, Tag::QRL, "Local release complete.", false );
     }
 
     // Button B  --  manually command Fill valve CLOSED (2 beeps)
@@ -739,7 +731,7 @@ void Check_Buttons()
     //       These buttons allow local testing of the valve without the EMU.
     if( curr_B == LOW && prev_B == HIGH )
     {
-        scrollMessage( &Screen, "Fill CLOSED", true );
+        Report_Status( &Screen, Tag::FIL, "valve CLOSED (local).", false );
         Beep( 2 );
         Fill_Valve.close();
     }
@@ -747,7 +739,7 @@ void Check_Buttons()
     // Button C  --  manually command Fill valve OPEN (1 beep)
     if( curr_C == LOW && prev_C == HIGH )
     {
-        scrollMessage( &Screen, "Fill OPEN", true );
+        Report_Status( &Screen, Tag::FIL, "valve OPEN (local).", false );
         Beep( 1 );
         Fill_Valve.open();
     }
@@ -774,10 +766,8 @@ void Check_Battery()
     if( (long)( millis() - battery_display_ms ) < (long)BATTERY_DISPLAY_INTERVAL_MS ) return;
     battery_display_ms = millis();
 
-    float  bat_v = GSEMU_Battery_Voltage();
-    String msg   = "Bat: " + String( bat_v, 2 ) + " V";
-    scrollMessage( &Screen, msg, false );
-    Post_Log_Message( msg );
+    float bat_v = GSEMU_Battery_Voltage();
+    Report_Status( &Screen, Tag::BAT, String( bat_v, 2 ) + " V", false );
 }
 
 // -----------------------------------------------------------------------------
@@ -794,7 +784,7 @@ void Check_LCO_Watch()
     int16_t raw = Analog_Inputs.readADC_SingleEnded( AD_AUX_CHANNEL );
     if( raw >= AD_AUX_THRESHOLD )
     {
-        Post_Log_Message( "[LCO] AUX input triggered -- sending LCO_TRIGGERED to EMU." );
+        Log_Message( Tag::LCO, "AUX input triggered -- sending LCO_TRIGGERED to EMU." );
         Send_CAN_Command_NoWait( CAN_NODE_EMU, CAN_LCO_TRIGGERED, 0.0f );
         lco_watch_armed = false;
     }
@@ -807,29 +797,29 @@ void Check_LCO_Watch()
 void Log_Config()
 {
     DateTime now = RT_Clock.now();
-    Post_Log_Message( "[CFG] ===== GSEMU startup configuration =====" );
-    Post_Log_Message( "[CFG] Version:   " + String( GSEMU_VERSION ) );
-    Post_Log_Message( String("[CFG] RTC time: ")
+    Log_Message( Tag::CFG, "===== GSEMU startup configuration =====" );
+    Log_Message( Tag::CFG, "Version:   " + String( GSEMU_VERSION ) );
+    Log_Message( Tag::CFG, String("RTC time: ")
         + String(now.year())   + "-"
         + String(now.month())  + "-"
         + String(now.day())    + " "
         + String(now.hour())   + ":"
         + String(now.minute()) + ":"
         + String(now.second()) );
-    Post_Log_Message( "[CFG] Battery:   " + String( GSEMU_Battery_Voltage(), 2 ) + " V" );
+    Log_Message( Tag::CFG, "Battery:   " + String( GSEMU_Battery_Voltage(), 2 ) + " V" );
 
     // --- Fill valve calibration ----------------------------------------------
-    Post_Log_Message( String("[CFG] Fill PWM open=") + String(FILL_VALVE_PWM_OPEN)
+    Log_Message( Tag::CFG, String("Fill PWM open=") + String(FILL_VALVE_PWM_OPEN)
         + " close=" + String(FILL_VALVE_PWM_CLOSE)
         + " | Pot open=" + String(FILL_VALVE_POS_OPEN)
         + " closed="     + String(FILL_VALVE_POS_CLOSED) );
-    Post_Log_Message( "[CFG] Valve dead-band: " + String( VALVE_POSITION_DEAD_BAND ) + " counts" );
+    Log_Message( Tag::CFG, "Valve dead-band: " + String( VALVE_POSITION_DEAD_BAND ) + " counts" );
 
     // --- QR servo calibration ------------------------------------------------
-    Post_Log_Message( String("[CFG] QR servo hold=") + String(QR_SERVO_PWM_HOLD)
+    Log_Message( Tag::CFG, String("QR servo hold=") + String(QR_SERVO_PWM_HOLD)
         + " open="     + String(QR_SERVO_PWM_OPEN)
         + " move_ms="  + String(QR_SERVO_MOVE_MS) );
-    Post_Log_Message( "[CFG] ==========================================" );
+    Log_Message( Tag::CFG, "==========================================" );
 }
 
 // Formats a wall-clock timestamp as MM/DD/YYYY HH:MM:SS.mmm. The PCF8523
@@ -869,24 +859,3 @@ void Get_RTC_DateTime( uint16_t *date, uint16_t *time )
     *time = FAT_TIME( now.hour(), now.minute(), now.second() );
 }
 
-// -----------------------------------------------------------------------------
-// Appends a timestamped message to the SD card log file.
-// Also echoes to Serial when SERIAL_CONSOLE_OUTPUT is defined.
-void Post_Log_Message( String S )
-{
-    String message = Format_Timestamp_Now() + " " + S;
-
-#ifdef SERIAL_CONSOLE_OUTPUT
-    Serial.println( message );
-    Serial.flush();
-#endif
-
-    if( log_file_name.length() == 0 ) return;   // no log file found during setup
-
-    File log = SD.open( log_file_name, FILE_WRITE );
-    if( log )
-    {
-        log.println( message );
-        log.close();
-    }
-}
