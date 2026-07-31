@@ -14,8 +14,6 @@
 //
 
 #include <Arduino.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SH110X.h>
 #include <SD.h>
 #include "KJO_Logging.h"    // LOG_FILE_FOLDER, LOG_FILE_NAME_BASE
 
