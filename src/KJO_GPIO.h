@@ -61,8 +61,10 @@ constexpr uint8_t QR_SENSE_EIO         = AUX_IO_3_EIO;
 // to serve has consolidated onto QR_SENSE_EIO above. Free for future use.
 
 // --- QR servo hardware configuration -----------------------------------------
-// Calibrated March 2026 on the bench.
-constexpr uint8_t  QR_SERVO_PWM_CHANNEL = 0;       // PCA9685 channel 0
+// Confirmed against the physical harness 2026-08-01: umbilical release servo
+// ("Servo B") is wired to PCA9685 channel 5, not channel 0 -- channel 0 never
+// matched the actual wiring, which is why CAN_QR_RELEASE never moved anything.
+constexpr uint8_t  QR_SERVO_PWM_CHANNEL = 5;       // PCA9685 channel 5 ("Servo B")
 constexpr int      QR_SERVO_PWM_HOLD    = 2400;    // 12-bit PWM count, latch engaged (not released)
 constexpr int      QR_SERVO_PWM_OPEN    = 2800;    // 12-bit PWM count, latch released
 constexpr uint16_t QR_SERVO_MOVE_MS     = 1000;    // ms — servo stroke time
