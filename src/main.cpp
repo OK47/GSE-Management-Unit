@@ -256,18 +256,26 @@ void Check_CAN()
             // No reply sent -- EMU sends this fire-and-forget via
             // Send_CAN_Command_NoWait() and never reads one. See
             // docs/superpowers/specs/2026-07-22-qr-can-release-design.md.
+            // Report_Status() (not just Log_Message()) so this shows on the
+            // OLED -- confirms on GSEMU's own screen that the command
+            // actually arrived, since there's no CAN reply to confirm it
+            // any other way.
+            Report_Status( &Screen, Tag::FIL, "QR release commanded (RCU_UNIT_TEST).", false );
             break;
 
         case CAN_OPEN_FILL_VALVE:
             Fill_Valve.open();
             Send_CAN_Response( source, CAN_OPEN_FILL_VALVE, true, 0.0f );
-            Log_Message( Tag::FIL, "Direct valve open commanded (RCU_UNIT_TEST)." );
+            // Report_Status() (not just Log_Message()) so this shows on the
+            // OLED, not only the serial/SD log -- lets the bench operator
+            // visually confirm the command reached GSEMU.
+            Report_Status( &Screen, Tag::FIL, "Direct valve open commanded (RCU_UNIT_TEST).", false );
             break;
 
         case CAN_CLOSE_FILL_VALVE:
             Fill_Valve.close();
             Send_CAN_Response( source, CAN_CLOSE_FILL_VALVE, true, 0.0f );
-            Log_Message( Tag::FIL, "Direct valve close commanded (RCU_UNIT_TEST)." );
+            Report_Status( &Screen, Tag::FIL, "Direct valve close commanded (RCU_UNIT_TEST).", false );
             break;
 
         case CAN_GET_GSEMU_BATTERY:
