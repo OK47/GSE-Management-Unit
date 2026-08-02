@@ -144,6 +144,16 @@ extern Valve       Fill_Valve;
 extern Adafruit_ADS1015 Analog_Inputs;
 float GSEMU_Battery_Voltage();
 
+// Forward declarations needed here since Check_CAN()'s CAN_OPEN_FILL_VALVE /
+// CAN_CLOSE_FILL_VALVE cases (below) set these to defer their CAN response
+// until Check_Fill_Valve_Move() (loop()) confirms the move physically
+// completed; their actual definitions live further down, near the other
+// fill-state-machine globals.
+extern bool          fill_move_pending;
+extern uint8_t       fill_move_reply_to;
+extern CAN_Command   fill_move_cmd;
+extern unsigned long fill_move_deadline;
+
 // Human-readable command name for logging -- bounds-checked since a
 // corrupted/noise frame could carry a command byte outside the defined
 // enum range, and CAN_Command_Name[] is not itself bounds-checked.
@@ -265,17 +275,26 @@ void Check_CAN()
 
         case CAN_OPEN_FILL_VALVE:
             Fill_Valve.open();
-            Send_CAN_Response( source, CAN_OPEN_FILL_VALVE, true, 0.0f );
-            // Report_Status() (not just Log_Message()) so this shows on the
-            // OLED, not only the serial/SD log -- lets the bench operator
-            // visually confirm the command reached GSEMU.
-            Report_Status( &Screen, Tag::FIL, "Direct valve open commanded (RCU_UNIT_TEST).", false );
+            // Response is deferred -- see Check_Fill_Valve_Move() (loop()) --
+            // until Fill_Valve.isStopped() confirms the move actually
+            // completed, instead of acking on receipt. Report_Status() (not
+            // just Log_Message()) so this shows on the OLED, not only the
+            // serial/SD log -- lets the bench operator visually confirm the
+            // command reached GSEMU.
+            fill_move_pending  = true;
+            fill_move_reply_to = source;
+            fill_move_cmd      = CAN_OPEN_FILL_VALVE;
+            fill_move_deadline = millis() + MOVE_TIMEOUT + 100;
+            Report_Status( &Screen, Tag::FIL, "Direct valve open commanded (RCU_UNIT_TEST) -- awaiting completion.", false );
             break;
 
         case CAN_CLOSE_FILL_VALVE:
             Fill_Valve.close();
-            Send_CAN_Response( source, CAN_CLOSE_FILL_VALVE, true, 0.0f );
-            Report_Status( &Screen, Tag::FIL, "Direct valve close commanded (RCU_UNIT_TEST).", false );
+            fill_move_pending  = true;
+            fill_move_reply_to = source;
+            fill_move_cmd      = CAN_CLOSE_FILL_VALVE;
+            fill_move_deadline = millis() + MOVE_TIMEOUT + 100;
+            Report_Status( &Screen, Tag::FIL, "Direct valve close commanded (RCU_UNIT_TEST) -- awaiting completion.", false );
             break;
 
         case CAN_GET_GSEMU_BATTERY:
@@ -348,6 +367,8 @@ void  Check_Buttons();
 float GSEMU_Battery_Voltage();
 void  Check_Battery();
 void  Check_LCO_Watch();
+void  Check_Fill_Valve_Move();
+void  Check_CAN_Presence();
 void  Log_Config();
 void  Send_CAN_Command_NoWait( uint8_t destination, CAN_Command command, float param );
 
@@ -373,6 +394,16 @@ uint8_t       fill_consecutive_fails  = 0;
 bool    begin_fill_reply_pending = false;   // Fill_Begin()'s tare request is outstanding
 uint8_t begin_fill_reply_dest    = 0;       // node to send the deferred CAN_BEGIN_FILL reply to
 bool    check_fill_poll_pending  = false;   // Check_Fill()'s weight-poll request is outstanding
+
+// Deferred single-valve-move state for CAN_OPEN_FILL_VALVE/CAN_CLOSE_FILL_VALVE
+// (RCU_UNIT_TEST only) -- Fill_Valve.open()/close() is issued immediately in
+// Check_CAN(), but the CAN response is deferred until Check_Fill_Valve_Move()
+// (loop()) confirms Fill_Valve.isStopped() (or MOVE_TIMEOUT+100ms elapses),
+// mirroring EMU's own Check_Valve_Move() pattern for its local Ox/Fuel valves.
+bool          fill_move_pending  = false;
+uint8_t       fill_move_reply_to = 0;
+CAN_Command   fill_move_cmd      = CAN_OPEN_FILL_VALVE;
+unsigned long fill_move_deadline = 0;
 
 void Fill_Set_Target( float target_lbm )
 {
@@ -642,28 +673,15 @@ void setup()
         Report_Status( &Screen, Tag::CAN, "init success.", true );
     }
 
-    Report_Status( &Screen, Tag::CAN, "waiting...", true );
+    // Boot no longer blocks waiting for EMU/LCMU -- fire the initial LCMU
+    // ping and continue immediately; Check_CAN_Presence() (loop()) retries
+    // and logs/displays the moment each peer is actually detected. EMU's
+    // presence is detected passively -- Check_CAN()'s CAN_PING case already
+    // sets emu_pinged unconditionally whenever EMU's own ping arrives, no
+    // matter when that happens relative to boot.
+    Report_Status( &Screen, Tag::CAN, "boot continuing (not waiting for peers).", true );
     Log_Message( Tag::TXC, "PING (" + String(CAN_PING) + ") to node " + String(CAN_NODE_LCMU) );
     Can.sendRequest( CAN_NODE_LCMU, CAN_PING, 0.0f );
-    unsigned long last_lcmu_ping_ms = millis();
-    while( !emu_pinged || !lcmu_pinged )
-    {
-        Check_CAN();   // services both roles: answers EMU's inbound ping,
-                        // and advances/reports Can's pending LCMU ping
-
-        if( !lcmu_pinged && Can.requestState( 1000 ) == CAN_REQUEST_TIMED_OUT )
-        {
-            Log_Message( Tag::TXC, "PING (" + String(CAN_PING) + ") to node " + String(CAN_NODE_LCMU) );
-            Can.sendRequest( CAN_NODE_LCMU, CAN_PING, 0.0f );
-            last_lcmu_ping_ms = millis();
-        }
-        if( !lcmu_pinged && Can.requestState( 1000 ) == CAN_REQUEST_COMPLETE )
-        {
-            Log_Message( Tag::RXC, "PING (" + String(CAN_PING) + ") response from node " + String(CAN_NODE_LCMU) );
-            lcmu_pinged = true;
-        }
-    }
-    Report_Status( &Screen, Tag::CAN, "3 nodes up.", true );
 
     // -- QR release servo (QR_Slave: sets servo to hold, configures CMD pin) --
     QR_Release.begin();
@@ -698,6 +716,14 @@ void loop()
 
     // Poll AUX analog input when armed for the LCO watch
     Check_LCO_Watch();
+
+    // Send the deferred CAN_OPEN_FILL_VALVE/CAN_CLOSE_FILL_VALVE response
+    // once Fill_Valve confirms it physically stopped (or times out)
+    Check_Fill_Valve_Move();
+
+    // Non-blocking replacement for the old boot-time presence wait -- retries
+    // pinging LCMU and logs/displays each peer as it's detected
+    Check_CAN_Presence();
 
     // Service CAN command dispatch (EMU -> GSEMU)
     Check_CAN();
@@ -834,6 +860,63 @@ void Check_LCO_Watch()
         Log_Message( Tag::LCO, "AUX input triggered -- sending LCO_TRIGGERED to EMU." );
         Send_CAN_Command_NoWait( CAN_NODE_EMU, CAN_LCO_TRIGGERED, 0.0f );
         lco_watch_armed = false;
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Sends the deferred CAN_OPEN_FILL_VALVE/CAN_CLOSE_FILL_VALVE response once
+// Fill_Valve confirms it physically stopped (or fill_move_deadline elapses)
+// -- see the case CAN_OPEN_FILL_VALVE/CAN_CLOSE_FILL_VALVE in Check_CAN().
+// No-ops when fill_move_pending is false.
+void Check_Fill_Valve_Move()
+{
+    if( !fill_move_pending ) return;
+    if( !Fill_Valve.isStopped() && millis() < fill_move_deadline ) return;
+
+    bool ok = Fill_Valve.isStopped();
+    Send_CAN_Response( fill_move_reply_to, fill_move_cmd, ok, 0.0f );
+    Report_Status( &Screen, Tag::FIL,
+                   ok ? "move confirmed complete." : "move TIMED OUT -- not confirmed.",
+                   false );
+    fill_move_pending = false;
+}
+
+// -----------------------------------------------------------------------------
+// Non-blocking replacement for the old boot-time blocking wait -- retries
+// pinging LCMU periodically and logs/displays the moment each peer is first
+// confirmed present, without ever blocking setup() or loop(). EMU's presence
+// is detected passively via Check_CAN()'s existing CAN_PING case (sets
+// emu_pinged unconditionally whenever EMU's own ping arrives).
+void Check_CAN_Presence()
+{
+    static bool emu_logged  = false;
+    static bool lcmu_logged = false;
+
+    if( emu_pinged && !emu_logged )
+    {
+        Report_Status( &Screen, Tag::CAN, "EMU detected on CAN bus.", false );
+        emu_logged = true;
+    }
+
+    if( lcmu_pinged )
+    {
+        if( !lcmu_logged )
+        {
+            Report_Status( &Screen, Tag::CAN, "LCMU detected on CAN bus.", false );
+            lcmu_logged = true;
+        }
+        return;   // stop retrying once confirmed
+    }
+
+    if( Can.requestState( 1000 ) == CAN_REQUEST_TIMED_OUT )
+    {
+        Log_Message( Tag::TXC, "PING (" + String(CAN_PING) + ") to node " + String(CAN_NODE_LCMU) + " (retry)" );
+        Can.sendRequest( CAN_NODE_LCMU, CAN_PING, 0.0f );
+    }
+    else if( Can.requestState( 1000 ) == CAN_REQUEST_COMPLETE )
+    {
+        Log_Message( Tag::RXC, "PING (" + String(CAN_PING) + ") response from node " + String(CAN_NODE_LCMU) );
+        lcmu_pinged = true;
     }
 }
 
