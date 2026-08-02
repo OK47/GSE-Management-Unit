@@ -734,11 +734,25 @@ void loop()
     // Service QR release servo: follow CMD level, detect physical separation
     QR_Release.update();
 
-    // Log umbilical separation event once when first confirmed
-    if( QR_Release.isSeparated() && !qr_sep_logged )
+    // Log umbilical separation event once when first confirmed; continuously
+    // enforce Fill_Valve closed for as long as the umbilical reads separated
+    // -- a hard safety invariant, independent of any CAN command or GSEMU's
+    // own fill_active bookkeeping. There is no valid reason for the ground
+    // fill line to be open once the umbilical has physically parted (whether
+    // from a real abort/launch separation or a bench QR test release), so
+    // this guards against any path -- a stray CAN_OPEN_FILL_VALVE, a stuck
+    // fill state, a command racing the separation itself -- leaving or
+    // putting the valve open while disconnected. Fill_Abort() closes the
+    // valve unconditionally (see its own fix) and clears fill-state
+    // bookkeeping; calling it repeatedly while separated is safe/idempotent.
+    if( QR_Release.isSeparated() )
     {
-        Report_Status( &Screen, Tag::QRL, "umbilical separated.", false );
-        qr_sep_logged = true;
+        if( !qr_sep_logged )
+        {
+            Report_Status( &Screen, Tag::QRL, "umbilical separated.", false );
+            qr_sep_logged = true;
+        }
+        if( !Fill_Valve.isClosed() ) Fill_Abort();
     }
 
     // Check front-panel buttons (local control)
