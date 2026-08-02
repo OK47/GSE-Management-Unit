@@ -154,6 +154,14 @@ extern uint8_t       fill_move_reply_to;
 extern CAN_Command   fill_move_cmd;
 extern unsigned long fill_move_deadline;
 
+// Forward declarations needed here since Check_CAN()'s CAN_QR_TEST_RELEASE
+// case (above) sets these to arm the timed, self-reverting release; their
+// actual definitions live further down, near the other fill-state-machine
+// globals. See Check_QR_Test_Release() (loop()).
+constexpr unsigned long QR_TEST_RELEASE_DURATION_MS = 3000;   // ms -- how long the servo stays in the release position before auto-returning to hold
+extern bool          qr_test_release_active;
+extern unsigned long qr_test_release_deadline;
+
 // Human-readable command name for logging -- bounds-checked since a
 // corrupted/noise frame could carry a command byte outside the defined
 // enum range, and CAN_Command_Name[] is not itself bounds-checked.
@@ -266,11 +274,24 @@ void Check_CAN()
             // No reply sent -- EMU sends this fire-and-forget via
             // Send_CAN_Command_NoWait() and never reads one. See
             // docs/superpowers/specs/2026-07-22-qr-can-release-design.md.
-            // Report_Status() (not just Log_Message()) so this shows on the
-            // OLED -- confirms on GSEMU's own screen that the command
-            // actually arrived, since there's no CAN reply to confirm it
-            // any other way.
+            // PERMANENT latch (commandRelease() never clears itself) --
+            // production's launch sequence only, safety-critical: must
+            // never auto-revert mid-flight. RCU_UNIT_TEST no longer uses
+            // this -- see CAN_QR_TEST_RELEASE below.
             Report_Status( &Screen, Tag::FIL, "QR release commanded (RCU_UNIT_TEST).", false );
+            break;
+
+        case CAN_QR_TEST_RELEASE:
+            // RCU_UNIT_TEST only -- timed, self-reverting release for bench
+            // testing. Reuses the SAME reversible localRelease()/localHold()
+            // mechanism the front-panel Button A already uses (NOT
+            // commandRelease()'s permanent latch, which production's launch
+            // sequence needs to stay released for real-flight safety).
+            QR_Release.localRelease();
+            qr_test_release_active   = true;
+            qr_test_release_deadline = millis() + QR_TEST_RELEASE_DURATION_MS;
+            Send_CAN_Response( source, CAN_QR_TEST_RELEASE, true, 0.0f );
+            Report_Status( &Screen, Tag::QRL, "Test release commanded (RCU_UNIT_TEST) -- 3s.", false );
             break;
 
         case CAN_OPEN_FILL_VALVE:
@@ -368,6 +389,7 @@ float GSEMU_Battery_Voltage();
 void  Check_Battery();
 void  Check_LCO_Watch();
 void  Check_Fill_Valve_Move();
+void  Check_QR_Test_Release();
 void  Check_CAN_Presence();
 void  Log_Config();
 void  Send_CAN_Command_NoWait( uint8_t destination, CAN_Command command, float param );
@@ -404,6 +426,11 @@ bool          fill_move_pending  = false;
 uint8_t       fill_move_reply_to = 0;
 CAN_Command   fill_move_cmd      = CAN_OPEN_FILL_VALVE;
 unsigned long fill_move_deadline = 0;
+
+// Timed QR test-release state (RCU_UNIT_TEST only) -- see CAN_QR_TEST_RELEASE
+// in Check_CAN() and Check_QR_Test_Release() (loop()).
+bool          qr_test_release_active   = false;
+unsigned long qr_test_release_deadline = 0;
 
 void Fill_Set_Target( float target_lbm )
 {
@@ -721,6 +748,10 @@ void loop()
     // once Fill_Valve confirms it physically stopped (or times out)
     Check_Fill_Valve_Move();
 
+    // Auto-revert the QR release servo back to hold once the timed test
+    // release (RCU_UNIT_TEST only, CAN_QR_TEST_RELEASE) has elapsed
+    Check_QR_Test_Release();
+
     // Non-blocking replacement for the old boot-time presence wait -- retries
     // pinging LCMU and logs/displays each peer as it's detected
     Check_CAN_Presence();
@@ -879,6 +910,23 @@ void Check_Fill_Valve_Move()
                    ok ? "move confirmed complete." : "move TIMED OUT -- not confirmed.",
                    false );
     fill_move_pending = false;
+}
+
+// -----------------------------------------------------------------------------
+// Returns the QR release servo to its held/connected position once
+// QR_TEST_RELEASE_DURATION_MS has elapsed since CAN_QR_TEST_RELEASE armed it
+// -- see the case CAN_QR_TEST_RELEASE in Check_CAN(). No-ops when
+// qr_test_release_active is false. Uses localHold() (the same reversible
+// mechanism Button A's release already uses), never touching the permanent
+// commandRelease() latch production's launch sequence relies on.
+void Check_QR_Test_Release()
+{
+    if( !qr_test_release_active ) return;
+    if( millis() < qr_test_release_deadline ) return;
+
+    QR_Release.localHold();
+    qr_test_release_active = false;
+    Report_Status( &Screen, Tag::QRL, "Test release complete -- servo returned to hold.", false );
 }
 
 // -----------------------------------------------------------------------------
