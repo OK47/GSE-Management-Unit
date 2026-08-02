@@ -59,10 +59,16 @@ constexpr uint8_t  VALVE_TURN_DEGREES       =   90;  // degrees of valve travel 
 //  open/close ADC counts, and ball-valve geometry.
 //  Values match the EMU's KJO_Valve.h — same physical valve.
 //
-constexpr uint8_t  FILL_VALVE_PWM             =    4;
+//  2026-08-02 diagnostic: Fill valve showed zero physical motion on
+//  Servo/Pot A (channel 4 / A4) even with known-good servos and verified
+//  power/ground, while QR (a different channel, same PCA9685 board) and
+//  EMU's own Ox valve (same channel 4 on a different board) both work --
+//  temporarily reassigned to Servo/Pot C (channel 6 / A1) to isolate
+//  whether channel 4's output on this specific board is at fault.
+constexpr uint8_t  FILL_VALVE_PWM             =    6;
 constexpr uint16_t FILL_VALVE_PWM_OPEN        = 2329;
 constexpr uint16_t FILL_VALVE_PWM_CLOSE       = 3918;
-constexpr uint8_t  FILL_VALVE_ANALOG_PIN      =   A4;
+constexpr uint8_t  FILL_VALVE_ANALOG_PIN      =   A1;
 constexpr uint16_t FILL_VALVE_POS_OPEN        = 1310;
 constexpr uint16_t FILL_VALVE_POS_CLOSED      = 3004;
 constexpr float    FILL_VALVE_BALL_DIAMETER   = 0.520f;
