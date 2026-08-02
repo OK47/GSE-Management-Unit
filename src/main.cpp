@@ -469,12 +469,18 @@ void Fill_Abort()
     }
     check_fill_poll_pending = false;   // ignore any in-flight weight-poll result -- this function is authoritative
 
+    // Always close the valve on an abort request, regardless of fill_active
+    // -- Fill_Valve can be open via a path that never sets fill_active (e.g.
+    // RCU_UNIT_TEST's direct CAN_OPEN_FILL_VALVE, which bypasses the fill
+    // state machine entirely). An abort must guarantee the valve is safe
+    // NOW, not only when GSEMU's own bookkeeping agrees a fill was active.
+    Fill_Valve.close();
+    Log_Message( Tag::FIL, "Aborted -- valve closed." );
+
     if( !fill_active ) return;
 
-    Fill_Valve.close();
     fill_active = false;
     fill_state  = FILL_STATUS_ABORTED;
-    Log_Message( Tag::FIL, "Aborted -- valve closed." );
 }
 
 Fill_Status Fill_Get_Status()
@@ -905,7 +911,11 @@ void Check_Fill_Valve_Move()
     if( !Fill_Valve.isStopped() && millis() < fill_move_deadline ) return;
 
     bool ok = Fill_Valve.isStopped();
-    Send_CAN_Response( fill_move_reply_to, fill_move_cmd, ok, 0.0f );
+    // r_val carries the actual measured position (not just the pass/fail
+    // "ok" flag) so a caller can reflect where the valve really ended up
+    // even on a partial/timed-out move -- same reasoning as Ox/Fuel Valve's
+    // response.r_val on EMU.
+    Send_CAN_Response( fill_move_reply_to, fill_move_cmd, ok, (float)Fill_Valve.getPositionPercent() );
     Report_Status( &Screen, Tag::FIL,
                    ok ? "move confirmed complete." : "move TIMED OUT -- not confirmed.",
                    false );
