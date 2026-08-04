@@ -15,7 +15,12 @@
 //    AUX digital state:
 //      Raw count >= AD_AUX_THRESHOLD  →  HIGH  →  Remote Start asserted (if Launch Enabled)
 //      Raw count <  AD_AUX_THRESHOLD  →  LOW   →  Remote Start de-asserted
-//      Threshold is set at half of 3.3 V full-scale ≈ 1.65 V.
+//      AUX input is a real-world LCO signal (~0 V idle, ~12 V triggered --
+//      3S LiPo or lead-acid launch control system) brought down to a safe
+//      ADS1015 input range through a resistor divider on the main board.
+//      Threshold is set at 0.5 V at the ADS1015 pin (post-divider) --
+//      calibrated against the actual divider hardware, gives good
+//      separation from ground across all real input signal cases.
 //
 //    Remote Start output:
 //      The REMOTE_START_EIO pin (I/O 6) is driven LOW only when BOTH:
@@ -44,9 +49,9 @@ constexpr uint8_t AD_LIPO_CHANNEL   = 3;    // Channel 3: 2S LiPo voltage divide
 constexpr uint8_t AD_AUX_CHANNEL    = 0;    // Channel 0: AUX analog input
 
 // ─── AUX input digital threshold ──────────────────────────────────────────────
-// Half of 3.3 V expressed in ADS1015 counts at GAIN_ONE:
-//   1.65 V / 0.00199144777 V/count ≈ 829 counts.
-constexpr int16_t AD_AUX_THRESHOLD  = 829;  // counts — readings >= this are HIGH
+// 0.5 V (post-divider, at the ADS1015 pin) expressed in counts at GAIN_ONE:
+//   0.5 V / 0.00199144777 V/count ≈ 251 counts.
+constexpr int16_t AD_AUX_THRESHOLD  = 251;  // counts — readings >= this are HIGH
 
 // ─── Battery display interval ─────────────────────────────────────────────────
 constexpr uint32_t BATTERY_DISPLAY_INTERVAL_MS = 10000; // ms — display battery voltage every 10 s
