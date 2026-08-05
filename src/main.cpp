@@ -278,7 +278,7 @@ void Check_CAN()
             // production's launch sequence only, safety-critical: must
             // never auto-revert mid-flight. RCU_UNIT_TEST no longer uses
             // this -- see CAN_QR_TEST_RELEASE below.
-            Report_Status( &Screen, Tag::FIL, "QR release commanded (RCU_UNIT_TEST).", false );
+            Report_Status( &Screen, Tag::QRL, "QR release commanded.", false );
             break;
 
         case CAN_QR_TEST_RELEASE:
