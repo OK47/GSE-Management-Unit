@@ -55,17 +55,3 @@ bool QR_Servo::isMoving()
     }
     return true;
 }
-
-bool QR_Servo::isAtOpen()
-{
-    isMoving();   // update state if timer has expired
-    return _servo_state == QR_Servo_State::AT_OPEN;
-}
-
-bool QR_Servo::isAtHold()
-{
-    isMoving();   // update state if timer has expired
-    return _servo_state == QR_Servo_State::AT_HOLD;
-}
-
-QR_Servo_State QR_Servo::getServoState() { return _servo_state; }

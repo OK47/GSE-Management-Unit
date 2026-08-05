@@ -68,18 +68,12 @@ class QR_Slave : public QR_Servo
         // Latched — stays true after the first HIGH transition.
         bool isSeparated();
 
-        // Returns true while the umbilical is physically connected (state line LOW).
-        bool isConnected();
-
         // Local override — bypasses the release-commanded latch and forces the servo to open.
         // Intended for front-panel Button A (hold-to-release):
         //   Call localRelease() on button press   (Button A goes LOW).
         //   Call localHold()    on button release  (Button A returns HIGH).
         void localRelease();    // set override; servo opens on next update()
         void localHold();       // clear override; servo follows the release-commanded latch on next update()
-
-        // Returns true while the local override is active.
-        bool isLocalOverride();
 
     private:
         Adafruit_MCP23X17 *_gpio;

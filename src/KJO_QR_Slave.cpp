@@ -92,9 +92,6 @@ void QR_Slave::commandRelease()
 // Latched — returns true for the remainder of the session after separation.
 bool QR_Slave::isSeparated() { return _separated; }
 
-// Returns true while the state line is LOW (umbilical physically connected).
-bool QR_Slave::isConnected() { return ( _gpio->digitalRead( _state_pin ) == LOW ); }
-
 // --- Local override ----------------------------------------------------------
 
 // Engage local release: servo opens on the next update() regardless of the release latch.
@@ -108,6 +105,3 @@ void QR_Slave::localHold()
 {
     _local_override = false;
 }
-
-// Returns true while the local button override is active.
-bool QR_Slave::isLocalOverride() { return _local_override; }

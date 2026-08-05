@@ -14,7 +14,7 @@
 //      OPEN = servo drives latch to released position
 //
 //    Call openServo() / holdServo() to start a move (non-blocking).
-//    isMoving(), isAtOpen(), and isAtHold() query state.
+//    isMoving() queries state.
 //
 
 #include <Arduino.h>
@@ -55,14 +55,6 @@ class QR_Servo
         // Also updates the internal state to AT_OPEN or AT_HOLD when the
         // window expires — safe to call every loop iteration.
         bool isMoving();
-
-        // Returns true when servo has been commanded open and move time has elapsed.
-        bool isAtOpen();
-
-        // Returns true when servo has been commanded hold and move time has elapsed.
-        bool isAtHold();
-
-        QR_Servo_State getServoState();
 
     protected:
         byte                     _channel;

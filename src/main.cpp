@@ -396,7 +396,6 @@ void  Check_Fill_Valve_Move();
 void  Check_QR_Test_Release();
 void  Check_CAN_Presence();
 void  Log_Config();
-void  Send_CAN_Command_NoWait( uint8_t destination, CAN_Command command, float param );
 
 // --- Fill state machine ---------------------------------------------------------
 // Armed by EMU's CAN_BEGIN_FILL (after CAN_SET_FILL_TARGET has already
