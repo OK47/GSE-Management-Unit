@@ -31,9 +31,9 @@ constexpr uint8_t AUX_IO_6_EIO = 13;   // Port B, pin B5  --  AUX connector 3, I
 // --- AUX 1: GSEMU<->EMU link-disconnect sense --------------------------------
 // The wired Fill-valve command/status handshake once carried on these two
 // pins has been retired in favor of CAN-orchestrated fill control (see
-// docs/superpowers/specs/2026-07-11-lcmu-design.md). AUX_IO_1 is repurposed
-// as a link-disconnect sense line, using the same ground-reference
-// technique already used by RELEASE_STATE_EIO below: wired to EMU chassis
+// docs/superpowers/plans/2026-07-11-gsemu-can-integration.md). AUX_IO_1 is
+// repurposed as a link-disconnect sense line, using the same ground-reference
+// technique the retired RELEASE_STATE_EIO used to use: wired to EMU chassis
 // GND, so a physical disconnect is detected instantly and independently of
 // any CAN bus traffic or timeout logic.
 //

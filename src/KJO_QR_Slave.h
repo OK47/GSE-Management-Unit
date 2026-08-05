@@ -13,8 +13,8 @@
 //    is no remote command back to "hold." A spring-loaded latch, once
 //    triggered, cannot be electrically un-released; only physical
 //    re-latching (and/or the local front-panel override below) changes
-//    it. See docs/superpowers/specs/2026-07-22-qr-can-release-design.md
-//    (and its 2026-07-28 correction note).
+//    it. See KJO_Shared_Libraries' docs/superpowers/specs/2026-07-22-qr-
+//    can-release-design.md (and its 2026-07-28 correction note).
 //
 //      State line (QR_SENSE_EIO, AUX connector 2, I/O 3):
 //        GSEMU reads this as INPUT_PULLUP.

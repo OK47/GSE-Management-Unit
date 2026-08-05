@@ -13,10 +13,6 @@
 //      - Motion detection thresholds
 //      - The Valve base class
 //
-//    NOTE: The GSE Management Unit will define a new valve class (or classes)
-//    that inherit from this Valve base class.  Per-valve hardware constants
-//    for the GSE valves will be defined in that class's header.
-//
 //    BUG FIX (constructor parameter order):
 //      The original KJO_Control_System.h declared the constructor with
 //      (PWM_close, PWM_open) and (encoder_close, encoder_open) but the

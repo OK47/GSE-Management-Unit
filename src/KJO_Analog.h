@@ -13,8 +13,8 @@
 //      V_bat = raw_count * AD_BASE_SCALE * GSEMU_LIPO_SCALE
 //
 //    AUX digital state:
-//      Raw count >= AD_AUX_THRESHOLD  →  HIGH  →  Remote Start asserted (if Launch Enabled)
-//      Raw count <  AD_AUX_THRESHOLD  →  LOW   →  Remote Start de-asserted
+//      Raw count >= AD_AUX_THRESHOLD  →  HIGH  →  LCO signal asserted
+//      Raw count <  AD_AUX_THRESHOLD  →  LOW   →  LCO signal idle
 //      AUX input is a real-world LCO signal (~0 V idle, ~12 V triggered --
 //      3S LiPo or lead-acid launch control system) brought down to a safe
 //      ADS1015 input range through a resistor divider on the main board.
@@ -22,15 +22,16 @@
 //      calibrated against the actual divider hardware, gives good
 //      separation from ground across all real input signal cases.
 //
-//    Remote Start output:
-//      The REMOTE_START_EIO pin (I/O 6) is driven LOW only when BOTH:
-//        - AUX input is HIGH (above threshold)
-//        - LAUNCH_ENABLE_EIO (I/O 5) reads LOW (EMU has enabled remote start)
-//      Both pins are defined in KJO_GPIO.h.
+//    LCO watch (CAN-based; replaces the retired wired Remote-Start output):
+//      When armed via CAN_ARM_LCO_WATCH(param=1), Check_LCO_Watch()
+//      (main.cpp) samples this channel every loop() iteration; on crossing
+//      AD_AUX_THRESHOLD it sends CAN_LCO_TRIGGERED to EMU (fire-and-forget)
+//      and disarms itself (single-shot). See KJO_Shared_Libraries's
+//      docs/superpowers/specs/2026-07-23-multi-source-ignition-design.md.
 //
 
 #include <Arduino.h>
-#include "KJO_GPIO.h"   // REMOTE_START_EIO, LAUNCH_ENABLE_EIO
+#include "KJO_GPIO.h"
 
 // ─── ADS1015 base scale ───────────────────────────────────────────────────────
 // Hardware constant — identical for all units using GAIN_ONE (±4.096 V full scale).

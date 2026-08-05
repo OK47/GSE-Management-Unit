@@ -45,7 +45,7 @@
 #include <KJO_Status_Display.h>      // Report_Status()
 
 // --- Conditional serial console ----------------------------------------------
-// Uncomment to enable Serial output for debugging.
+// Currently enabled. Comment out the #define below to disable Serial output.
 #define SERIAL_CONSOLE_OUTPUT
 
 // --- Platform identifier for this build --------------------------------------
@@ -273,7 +273,7 @@ void Check_CAN()
             QR_Release.commandRelease();
             // No reply sent -- EMU sends this fire-and-forget via
             // Send_CAN_Command_NoWait() and never reads one. See
-            // docs/superpowers/specs/2026-07-22-qr-can-release-design.md.
+            // KJO_Shared_Libraries' docs/superpowers/specs/2026-07-22-qr-can-release-design.md.
             // PERMANENT latch (commandRelease() never clears itself) --
             // production's launch sequence only, safety-critical: must
             // never auto-revert mid-flight. RCU_UNIT_TEST no longer uses
@@ -337,9 +337,12 @@ void Check_CAN()
         }
 
         default:
-            // TARE / GET_BATTERY_VOLTAGE / REPORT_CURRENT_WEIGHT /
-            // BEGIN-STOP_WEIGHT_RECORDING / BEGIN-STOP_THRUST_RECORDING are
-            // LCMU-side commands -- not handled by GSEMU.
+            // Any command not explicitly handled above (e.g. the LCMU-side
+            // TARE/GET_BATTERY_VOLTAGE/REPORT_CURRENT_WEIGHT/weight-recording/
+            // thrust-recording/GET_CELL_RAW commands) is intentionally
+            // unhandled here -- not addressed to GSEMU. Deliberately phrased
+            // as a category rather than an enumerated list so this comment
+            // can't go stale again as the shared command set grows.
             break;
     }
 }
@@ -354,7 +357,7 @@ Valve Fill_Valve( FILL_VALVE,
                   &Servos );
 
 // Umbilical quick-release servo  --  commanded over CAN (CAN_QR_RELEASE), one-shot (QR_Slave).
-// ⚠ QR_SERVO_PWM_HOLD / QR_SERVO_PWM_OPEN are placeholders — calibrate before use.
+// QR_SERVO_PWM_HOLD / QR_SERVO_PWM_OPEN calibrated March 2026 on the bench (see KJO_GPIO.h).
 // Hardware constants from KJO_GPIO.h.
 QR_Slave QR_Release( QR_SERVO_PWM_CHANNEL,
                      QR_SERVO_PWM_HOLD, QR_SERVO_PWM_OPEN,
@@ -371,7 +374,8 @@ long battery_display_ms = 0;
 // Gates Check_LCO_Watch()'s sampling of AD_AUX_CHANNEL. Set true by
 // CAN_ARM_LCO_WATCH(param=1), cleared by CAN_ARM_LCO_WATCH(param=0) or by
 // Check_LCO_Watch() itself once it fires (single-shot). See
-// docs/superpowers/specs/2026-07-23-multi-source-ignition-design.md.
+// KJO_Shared_Libraries' docs/superpowers/specs/2026-07-23-multi-source-
+// ignition-design.md.
 bool lco_watch_armed = false;
 
 // QR separation event: latched true once umbilical separation has been logged.
@@ -899,8 +903,8 @@ void Check_Battery()
 // true (set by CAN_ARM_LCO_WATCH). Reads AUX analog input (ADS1015 channel
 // AD_AUX_CHANNEL) and, on crossing AD_AUX_THRESHOLD, sends CAN_LCO_TRIGGERED
 // to EMU (fire-and-forget, no reply expected) and clears lco_watch_armed
-// (single-shot). See docs/superpowers/specs/2026-07-23-multi-source-
-// ignition-design.md.
+// (single-shot). See KJO_Shared_Libraries' docs/superpowers/specs/2026-07-
+// 23-multi-source-ignition-design.md.
 void Check_LCO_Watch()
 {
     if( !lco_watch_armed ) return;
