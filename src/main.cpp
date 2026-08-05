@@ -210,6 +210,13 @@ void Send_CAN_Command_NoWait( uint8_t destination, CAN_Command command, float pa
 // globals declared there; forward-declared here so Check_CAN() can call it.
 static void Advance_Pending_Fill_Operations();
 
+// Shared helper for the CAN_OPEN_FILL_VALVE/CAN_CLOSE_FILL_VALVE cases below --
+// issues the immediate Fill_Valve move and arms the deferred-response
+// bookkeeping Check_Fill_Valve_Move() (loop()) uses to confirm it physically
+// completed. Defined after the fill_move_* globals (near them), forward-
+// declared here so Check_CAN() can call it.
+static void Begin_Fill_Move( uint8_t source, CAN_Command cmd, bool opening );
+
 void Check_CAN()
 {
     CAN_Command_Frame frame;
@@ -295,27 +302,14 @@ void Check_CAN()
             break;
 
         case CAN_OPEN_FILL_VALVE:
-            Fill_Valve.open();
-            // Response is deferred -- see Check_Fill_Valve_Move() (loop()) --
-            // until Fill_Valve.isStopped() confirms the move actually
-            // completed, instead of acking on receipt. Report_Status() (not
-            // just Log_Message()) so this shows on the OLED, not only the
-            // serial/SD log -- lets the bench operator visually confirm the
-            // command reached GSEMU.
-            fill_move_pending  = true;
-            fill_move_reply_to = source;
-            fill_move_cmd      = CAN_OPEN_FILL_VALVE;
-            fill_move_deadline = millis() + MOVE_TIMEOUT + 100;
-            Report_Status( &Screen, Tag::FIL, "Direct valve open commanded (RCU_UNIT_TEST) -- awaiting completion.", false );
+            // RCU_UNIT_TEST only -- direct valve move, bypassing the fill
+            // state machine. See Begin_Fill_Move() (near the fill_move_*
+            // globals) for the deferred-response bookkeeping.
+            Begin_Fill_Move( source, CAN_OPEN_FILL_VALVE, true );
             break;
 
         case CAN_CLOSE_FILL_VALVE:
-            Fill_Valve.close();
-            fill_move_pending  = true;
-            fill_move_reply_to = source;
-            fill_move_cmd      = CAN_CLOSE_FILL_VALVE;
-            fill_move_deadline = millis() + MOVE_TIMEOUT + 100;
-            Report_Status( &Screen, Tag::FIL, "Direct valve close commanded (RCU_UNIT_TEST) -- awaiting completion.", false );
+            Begin_Fill_Move( source, CAN_CLOSE_FILL_VALVE, false );
             break;
 
         case CAN_GET_GSEMU_BATTERY:
@@ -429,6 +423,33 @@ bool          fill_move_pending  = false;
 uint8_t       fill_move_reply_to = 0;
 CAN_Command   fill_move_cmd      = CAN_OPEN_FILL_VALVE;
 unsigned long fill_move_deadline = 0;
+
+// Issues the immediate Fill_Valve move for CAN_OPEN_FILL_VALVE/CAN_CLOSE_FILL_VALVE
+// (RCU_UNIT_TEST only -- see Check_CAN()) and arms the deferred-response
+// bookkeeping Check_Fill_Valve_Move() (loop()) uses to confirm the move
+// physically completed before replying. 'opening' selects open()/close();
+// 'cmd' is echoed back in the eventual CAN response (and used to pick the
+// Report_Status() text).
+static void Begin_Fill_Move( uint8_t source, CAN_Command cmd, bool opening )
+{
+    if( opening ) Fill_Valve.open();
+    else          Fill_Valve.close();
+
+    // Response is deferred -- see Check_Fill_Valve_Move() (loop()) --
+    // until Fill_Valve.isStopped() confirms the move actually
+    // completed, instead of acking on receipt. Report_Status() (not
+    // just Log_Message()) so this shows on the OLED, not only the
+    // serial/SD log -- lets the bench operator visually confirm the
+    // command reached GSEMU.
+    fill_move_pending  = true;
+    fill_move_reply_to = source;
+    fill_move_cmd      = cmd;
+    fill_move_deadline = millis() + MOVE_TIMEOUT + 100;
+    Report_Status( &Screen, Tag::FIL,
+                   opening ? "Direct valve open commanded (RCU_UNIT_TEST) -- awaiting completion."
+                           : "Direct valve close commanded (RCU_UNIT_TEST) -- awaiting completion.",
+                   false );
+}
 
 // Timed QR test-release state (RCU_UNIT_TEST only) -- see CAN_QR_TEST_RELEASE
 // in Check_CAN() and Check_QR_Test_Release() (loop()).
@@ -983,12 +1004,14 @@ void Check_CAN_Presence()
         return;   // stop retrying once confirmed
     }
 
-    if( Can.requestState( 1000 ) == CAN_REQUEST_TIMED_OUT )
+    CAN_Request_State ping_state = Can.requestState( 1000 );
+
+    if( ping_state == CAN_REQUEST_TIMED_OUT )
     {
         Log_Message( Tag::TXC, "PING (" + String(CAN_PING) + ") to node " + String(CAN_NODE_LCMU) + " (retry)" );
         Can.sendRequest( CAN_NODE_LCMU, CAN_PING, 0.0f );
     }
-    else if( Can.requestState( 1000 ) == CAN_REQUEST_COMPLETE )
+    else if( ping_state == CAN_REQUEST_COMPLETE )
     {
         Log_Message( Tag::RXC, "PING (" + String(CAN_PING) + ") response from node " + String(CAN_NODE_LCMU) );
         lcmu_pinged = true;
