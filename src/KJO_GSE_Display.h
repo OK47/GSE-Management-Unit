@@ -21,7 +21,7 @@
 
 // --- Function declarations ----------------------------------------------------
 
-// Scan the SD card and return the path of the next unused log file.
+// Scan the SD card and return the file name of the next unused log file.
 // Files are named: LOG_FILE_NAME_BASE + <index> + ".txt", written flat to
 // the SD card root (no folder prefix).
 String Find_Available_File();
