@@ -792,14 +792,15 @@ void loop()
     bool qr_connected_now = QR_Release.isCurrentlyConnected();
     if( !qr_connected_now && qr_was_connected )
     {
-        // Falling edge: umbilical just separated.
-        Report_Status( &Screen, Tag::QRL, "umbilical separated.", false );
+        // Falling edge: umbilical just separated. Message omits the word
+        // "umbilical" -- the [QRL] tag prefix already identifies it.
+        Report_Status( &Screen, Tag::QRL, "<open>", false );
         if( !Fill_Valve.isClosed() ) Fill_Abort();
     }
     else if( qr_connected_now && !qr_was_connected )
     {
         // Rising edge: umbilical just reconnected -- CAN control resumes.
-        Report_Status( &Screen, Tag::QRL, "umbilical reconnected.", false );
+        Report_Status( &Screen, Tag::QRL, "<attached>", false );
     }
     qr_was_connected = qr_connected_now;
 
