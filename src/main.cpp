@@ -44,10 +44,6 @@
 #include <KJO_Status.h>              // Tag, Log_Message()
 #include <KJO_Status_Display.h>      // Report_Status()
 
-// --- Conditional serial console ----------------------------------------------
-// Currently enabled. Comment out the #define below to disable Serial output.
-#define SERIAL_CONSOLE_OUTPUT
-
 // --- Platform identifier for this build --------------------------------------
 constexpr uint8_t PLATFORM = GSEMU_PLATFORM;
 
@@ -607,12 +603,6 @@ static void Advance_Pending_Fill_Operations()
 // -----------------------------------------------------------------------------
 void setup()
 {
-#ifdef SERIAL_CONSOLE_OUTPUT
-    Serial.begin( 115200 );
-    // Wait up to 3 s for USB-CDC enumeration (avoids blocking when untethered)
-    { unsigned long _t = millis() + 3000; while( !Serial && millis() < _t ) delay( 10 ); }
-    Serial.println( "Starting up." );
-#endif
 
     // -- OLED display ----------------------------------------------------------
     Screen.begin();
@@ -628,24 +618,15 @@ void setup()
 
     Report_Status( &Screen, Tag::SYS, "starting.", true );
 
-#ifdef SERIAL_CONSOLE_OUTPUT
-    Serial.println( "Display ready." );
-#endif
     Report_Status( &Screen, Tag::OLD, "ready.", true );
 
     // -- GPIO expansion board --------------------------------------------------
     if( !E_GPIO.begin_I2C() )
     {
-#ifdef SERIAL_CONSOLE_OUTPUT
-        Serial.println( "Expansion I/O Error." );
-#endif
         Report_Status( &Screen, Tag::GPO, "ERROR.", true );
     }
     else
     {
-#ifdef SERIAL_CONSOLE_OUTPUT
-        Serial.println( "Expansion I/O ready." );
-#endif
         Report_Status( &Screen, Tag::GPO, "ready.", true );
     }
 
