@@ -13,8 +13,13 @@
 //      V_bat = raw_count * AD_BASE_SCALE * GSEMU_LIPO_SCALE
 //
 //    AUX digital state:
-//      Raw count >= AD_AUX_THRESHOLD  →  HIGH  →  LCO signal asserted
-//      Raw count <  AD_AUX_THRESHOLD  →  LOW   →  LCO signal idle
+//      abs(raw count) >= AD_AUX_THRESHOLD  →  HIGH  →  LCO signal asserted
+//      abs(raw count) <  AD_AUX_THRESHOLD  →  LOW   →  LCO signal idle
+//      abs() because the ADS1015's single-ended read is still a signed
+//      differential measurement against GND -- there is no guarantee of
+//      polarity/markings on a real firing-lead connection without measuring
+//      the leads live (which requires firing them), so a bare unsigned
+//      comparison would miss the signal entirely if wired reversed.
 //      AUX input is a real-world LCO signal (~0 V idle, ~12 V triggered --
 //      3S LiPo or lead-acid launch control system) brought down to a safe
 //      ADS1015 input range through a resistor divider on the main board.

@@ -65,8 +65,20 @@ class QR_Slave : public QR_Servo
         void commandRelease();
 
         // Returns true once the state line has gone HIGH (physical separation confirmed).
-        // Latched — stays true after the first HIGH transition.
+        // Latched — stays true after the first HIGH transition. Intended for
+        // permanent-record uses (e.g. "did this vehicle's umbilical ever
+        // separate this session") -- NOT for gating live behavior, since it
+        // never clears on reconnect. See isCurrentlyConnected() for that.
         bool isSeparated();
+
+        // Returns the LIVE physical state of the state line: true when
+        // currently connected (state line LOW), false when currently
+        // separated (state line HIGH) -- reflects the most recent update()
+        // sample with no latching. Unlike isSeparated(), this returns to
+        // true immediately once the umbilical is physically reconnected.
+        // Use this for anything that must resume normal behavior on
+        // reconnect (e.g. the Fill Valve safety interlock in main.cpp).
+        bool isCurrentlyConnected();
 
         // Local override — bypasses the release-commanded latch and forces the servo to open.
         // Intended for front-panel Button A (hold-to-release):

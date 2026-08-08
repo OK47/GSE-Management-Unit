@@ -92,6 +92,10 @@ void QR_Slave::commandRelease()
 // Latched — returns true for the remainder of the session after separation.
 bool QR_Slave::isSeparated() { return _separated; }
 
+// Live state, no latching -- _prev_state is refreshed with the current GPIO
+// read on every update() call, so this reflects reconnection immediately.
+bool QR_Slave::isCurrentlyConnected() { return _prev_state == LOW; }
+
 // --- Local override ----------------------------------------------------------
 
 // Engage local release: servo opens on the next update() regardless of the release latch.

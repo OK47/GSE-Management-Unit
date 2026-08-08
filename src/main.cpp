@@ -325,7 +325,12 @@ void Check_CAN()
             // Read-only: does NOT touch lco_watch_armed or trigger anything,
             // unlike Check_LCO_Watch()'s armed-only crossing detection.
             int  raw       = Analog_Inputs.readADC_SingleEnded( AD_AUX_CHANNEL );
-            bool lco_state = ( raw >= AD_AUX_THRESHOLD );
+            // abs(): the ADS1015's single-ended read is still a signed
+            // differential measurement against GND -- reversed real-world
+            // LCO polarity (unknown/unlabeled firing-lead wiring) produces a
+            // negative raw count, which a bare >= comparison would never
+            // catch. See KJO_Analog.h's threshold comment.
+            bool lco_state = ( abs( raw ) >= AD_AUX_THRESHOLD );
             Send_CAN_Response( source, CAN_GET_LCO_STATE, true, lco_state ? 1.0f : 0.0f );
             break;
         }
@@ -372,8 +377,12 @@ long battery_display_ms = 0;
 // ignition-design.md.
 bool lco_watch_armed = false;
 
-// QR separation event: latched true once umbilical separation has been logged.
-bool qr_sep_logged  = false;
+// Previous-iteration snapshot of QR_Release.isCurrentlyConnected(), for
+// edge detection in loop()'s Fill Valve safety interlock -- see there.
+// Starts true (assumed connected); if the umbilical is actually already
+// separated at boot, the first loop() iteration reads the real state,
+// detects the "edge" against this default, and reacts correctly anyway.
+bool qr_was_connected = true;
 
 // SD card log file
 SdFile Log_file;
@@ -758,26 +767,41 @@ void loop()
     // Service QR release servo: follow CMD level, detect physical separation
     QR_Release.update();
 
-    // Log umbilical separation event once when first confirmed; continuously
-    // enforce Fill_Valve closed for as long as the umbilical reads separated
-    // -- a hard safety invariant, independent of any CAN command or GSEMU's
-    // own fill_active bookkeeping. There is no valid reason for the ground
-    // fill line to be open once the umbilical has physically parted (whether
-    // from a real abort/launch separation or a bench QR test release), so
-    // this guards against any path -- a stray CAN_OPEN_FILL_VALVE, a stuck
-    // fill state, a command racing the separation itself -- leaving or
-    // putting the valve open while disconnected. Fill_Abort() closes the
-    // valve unconditionally (see its own fix) and clears fill-state
-    // bookkeeping; calling it repeatedly while separated is safe/idempotent.
-    if( QR_Release.isSeparated() )
+    // Fill Valve safety interlock: on the INSTANT the umbilical separates
+    // (edge-triggered, not continuous), force the valve closed if it isn't
+    // already -- a hard safety invariant, independent of any CAN command or
+    // GSEMU's own fill_active bookkeeping. There is no valid reason for the
+    // ground fill line to be left open at the moment the umbilical parts
+    // (whether from a real abort/launch separation or a bench QR test
+    // release), so this guards against any path -- a stray
+    // CAN_OPEN_FILL_VALVE that was mid-flight when the umbilical parted, a
+    // stuck fill state, a command racing the separation itself -- leaving
+    // the valve open at that instant. Fill_Abort() closes the valve
+    // unconditionally (see its own fix) and clears fill-state bookkeeping.
+    //
+    // Deliberately does NOT keep re-closing the valve for the rest of the
+    // disconnected period: GSEMU's own local front-panel Button B/C (see
+    // Check_Buttons()) are the intended, fully-functional way to operate
+    // the Fill Valve while disconnected -- e.g. safely venting a fill line
+    // on the ground after a real separation. Continuously re-enforcing
+    // "closed" here would fight those buttons on every loop() tick. No
+    // separate gate against CAN-relayed opens is needed either: EMU's CAN
+    // commands physically cannot reach GSEMU while the umbilical -- which
+    // carries the CAN bus -- is parted, and normal remote control resumes
+    // on its own the instant the physical link is restored.
+    bool qr_connected_now = QR_Release.isCurrentlyConnected();
+    if( !qr_connected_now && qr_was_connected )
     {
-        if( !qr_sep_logged )
-        {
-            Report_Status( &Screen, Tag::QRL, "umbilical separated.", false );
-            qr_sep_logged = true;
-        }
+        // Falling edge: umbilical just separated.
+        Report_Status( &Screen, Tag::QRL, "umbilical separated.", false );
         if( !Fill_Valve.isClosed() ) Fill_Abort();
     }
+    else if( qr_connected_now && !qr_was_connected )
+    {
+        // Rising edge: umbilical just reconnected -- CAN control resumes.
+        Report_Status( &Screen, Tag::QRL, "umbilical reconnected.", false );
+    }
+    qr_was_connected = qr_connected_now;
 
     // Check front-panel buttons (local control)
     Check_Buttons();
@@ -930,7 +954,9 @@ void Check_LCO_Watch()
     if( !lco_watch_armed ) return;
 
     int16_t raw = Analog_Inputs.readADC_SingleEnded( AD_AUX_CHANNEL );
-    if( raw >= AD_AUX_THRESHOLD )
+    // abs(): see CAN_GET_LCO_STATE's identical comment above -- reversed
+    // real-world LCO polarity produces a negative raw count.
+    if( abs( raw ) >= AD_AUX_THRESHOLD )
     {
         Log_Message( Tag::LCO, "AUX input triggered -- sending LCO_TRIGGERED to EMU." );
         Send_CAN_Command_NoWait( CAN_NODE_EMU, CAN_LCO_TRIGGERED, 0.0f );
