@@ -321,12 +321,9 @@ void Check_CAN()
             // Read-only: does NOT touch lco_watch_armed or trigger anything,
             // unlike Check_LCO_Watch()'s armed-only crossing detection.
             int  raw       = Analog_Inputs.readADC_SingleEnded( AD_AUX_CHANNEL );
-            // abs(): the ADS1015's single-ended read is still a signed
-            // differential measurement against GND -- reversed real-world
-            // LCO polarity (unknown/unlabeled firing-lead wiring) produces a
-            // negative raw count, which a bare >= comparison would never
-            // catch. See KJO_Analog.h's threshold comment.
-            bool lco_state = ( abs( raw ) >= AD_AUX_THRESHOLD );
+            // Polarity is guaranteed correct by installation procedure, not
+            // detected here -- see KJO_Analog.h's threshold comment.
+            bool lco_state = ( raw >= AD_AUX_THRESHOLD );
             Send_CAN_Response( source, CAN_GET_LCO_STATE, true, lco_state ? 1.0f : 0.0f );
             break;
         }
@@ -936,9 +933,9 @@ void Check_LCO_Watch()
     if( !lco_watch_armed ) return;
 
     int16_t raw = Analog_Inputs.readADC_SingleEnded( AD_AUX_CHANNEL );
-    // abs(): see CAN_GET_LCO_STATE's identical comment above -- reversed
-    // real-world LCO polarity produces a negative raw count.
-    if( abs( raw ) >= AD_AUX_THRESHOLD )
+    // Polarity is guaranteed correct by installation procedure -- see
+    // CAN_GET_LCO_STATE's identical comment above and KJO_Analog.h.
+    if( raw >= AD_AUX_THRESHOLD )
     {
         Log_Message( Tag::LCO, "AUX input triggered -- sending LCO_TRIGGERED to EMU." );
         Send_CAN_Command_NoWait( CAN_NODE_EMU, CAN_LCO_TRIGGERED, 0.0f );

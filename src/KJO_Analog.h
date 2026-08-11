@@ -13,19 +13,31 @@
 //      V_bat = raw_count * AD_BASE_SCALE * GSEMU_LIPO_SCALE
 //
 //    AUX digital state:
-//      abs(raw count) >= AD_AUX_THRESHOLD  →  HIGH  →  LCO signal asserted
-//      abs(raw count) <  AD_AUX_THRESHOLD  →  LOW   →  LCO signal idle
-//      abs() because the ADS1015's single-ended read is still a signed
-//      differential measurement against GND -- there is no guarantee of
-//      polarity/markings on a real firing-lead connection without measuring
-//      the leads live (which requires firing them), so a bare unsigned
-//      comparison would miss the signal entirely if wired reversed.
+//      raw count >= AD_AUX_THRESHOLD  →  HIGH  →  LCO signal asserted
+//      raw count <  AD_AUX_THRESHOLD  →  LOW   →  LCO signal idle
 //      AUX input is a real-world LCO signal (~0 V idle, ~12 V triggered --
 //      3S LiPo or lead-acid launch control system) brought down to a safe
 //      ADS1015 input range through a resistor divider on the main board.
 //      Threshold is set at 0.5 V at the ADS1015 pin (post-divider) --
 //      calibrated against the actual divider hardware, gives good
 //      separation from ground across all real input signal cases.
+//
+//      POLARITY (2026-08): a bare unsigned comparison is correct here, not
+//      abs(raw count). An abs()-based check sat here previously on the
+//      assumption that a reversed firing-lead connection would still
+//      register a usable negative-going reading. Bench characterization
+//      (2026-08-08/09) showed that assumption was wrong: the ADS1015's own
+//      input protection diodes clamp a reversed-polarity input to within
+//      roughly a diode drop of GND (a few hundred mV, chip-to-chip
+//      variable) well before the divider can pull it further negative --
+//      abs() was never a reliable safety net, since whether the clamped
+//      voltage happened to clear AD_AUX_THRESHOLD was essentially a coin
+//      flip. Firing-lead polarity is now verified once at installation (a
+//      simple bench continuity/polarity check, no live fire required) and
+//      wired correctly, so the signal is guaranteed positive-going here. A
+//      future accidental reversal will fail silently (never crosses
+//      threshold) rather than being caught -- an accepted tradeoff given
+//      the one-time verification step.
 //
 //    LCO watch (CAN-based; replaces the retired wired Remote-Start output):
 //      When armed via CAN_ARM_LCO_WATCH(param=1), Check_LCO_Watch()
