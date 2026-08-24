@@ -105,8 +105,6 @@ CAN_Client        Can( Transport, CAN_NODE_GSEMU );
 bool               emu_pinged  = false;   // set once EMU's boot-time CAN_PING is received
 bool               lcmu_pinged = false;   // set once LCMU responds to our boot-time CAN_PING
 
-constexpr unsigned long CAN_RESPONSE_TIMEOUT_MS = 500;   // bumped from 200ms: doubles as Check_Fill()'s per-attempt weight-poll timeout
-
 // SD/RTC init status -- used for CAN_GET_HEALTH_STATUS
 bool sd_ok  = false;   // set in setup(); used for CAN_GET_HEALTH_STATUS
 bool rtc_ok = false;   // set in setup(); used for CAN_GET_HEALTH_STATUS
@@ -259,9 +257,9 @@ void Check_CAN()
             break;
 
         case CAN_OPEN_FILL_VALVE:
-            // RCU_UNIT_TEST only -- direct valve move, bypassing the fill
-            // state machine. See Begin_Fill_Move() (near the fill_move_*
-            // globals) for the deferred-response bookkeeping.
+            // Production's sole fill-valve mechanism (also used directly by
+            // RCU_UNIT_TEST for bench testing). See Begin_Fill_Move() (near
+            // the fill_move_* globals) for the deferred-response bookkeeping.
             Begin_Fill_Move( source, CAN_OPEN_FILL_VALVE, true );
             break;
 
@@ -357,21 +355,24 @@ void  Check_CAN_Presence();
 void  Log_Config();
 
 // Deferred single-valve-move state for CAN_OPEN_FILL_VALVE/CAN_CLOSE_FILL_VALVE
-// (RCU_UNIT_TEST only) -- Fill_Valve.open()/close() is issued immediately in
-// Check_CAN(), but the CAN response is deferred until Check_Fill_Valve_Move()
-// (loop()) confirms Fill_Valve.isStopped() (or MOVE_TIMEOUT+100ms elapses),
-// mirroring EMU's own Check_Valve_Move() pattern for its local Ox/Fuel valves.
+// (production's sole fill-valve mechanism, also used directly by
+// RCU_UNIT_TEST for bench testing) -- Fill_Valve.open()/close() is issued
+// immediately in Check_CAN(), but the CAN response is deferred until
+// Check_Fill_Valve_Move() (loop()) confirms Fill_Valve.isStopped() (or
+// MOVE_TIMEOUT+100ms elapses), mirroring EMU's own Check_Valve_Move()
+// pattern for its local Ox/Fuel valves.
 bool          fill_move_pending  = false;
 uint8_t       fill_move_reply_to = 0;
 CAN_Command   fill_move_cmd      = CAN_OPEN_FILL_VALVE;
 unsigned long fill_move_deadline = 0;
 
 // Issues the immediate Fill_Valve move for CAN_OPEN_FILL_VALVE/CAN_CLOSE_FILL_VALVE
-// (RCU_UNIT_TEST only -- see Check_CAN()) and arms the deferred-response
-// bookkeeping Check_Fill_Valve_Move() (loop()) uses to confirm the move
-// physically completed before replying. 'opening' selects open()/close();
-// 'cmd' is echoed back in the eventual CAN response (and used to pick the
-// Report_Status() text).
+// (production's sole fill-valve mechanism, also used directly by
+// RCU_UNIT_TEST for bench testing -- see Check_CAN()) and arms the
+// deferred-response bookkeeping Check_Fill_Valve_Move() (loop()) uses to
+// confirm the move physically completed before replying. 'opening' selects
+// open()/close(); 'cmd' is echoed back in the eventual CAN response (and
+// used to pick the Report_Status() text).
 static void Begin_Fill_Move( uint8_t source, CAN_Command cmd, bool opening )
 {
     if( opening ) Fill_Valve.open();
@@ -388,8 +389,8 @@ static void Begin_Fill_Move( uint8_t source, CAN_Command cmd, bool opening )
     fill_move_cmd      = cmd;
     fill_move_deadline = millis() + MOVE_TIMEOUT + 100;
     Report_Status( &Screen, Tag::FIL,
-                   opening ? "Direct valve open commanded (RCU_UNIT_TEST) -- awaiting completion."
-                           : "Direct valve close commanded (RCU_UNIT_TEST) -- awaiting completion.",
+                   opening ? "Direct valve open commanded -- awaiting completion."
+                           : "Direct valve close commanded -- awaiting completion.",
                    false );
 }
 
@@ -548,13 +549,12 @@ void loop()
 
     // Fill Valve safety interlock: on the INSTANT the umbilical separates
     // (edge-triggered, not continuous), force the valve closed if it isn't
-    // already -- a hard safety invariant, independent of any CAN command or
-    // GSEMU's own fill_active bookkeeping. There is no valid reason for the
-    // ground fill line to be left open at the moment the umbilical parts
-    // (whether from a real abort/launch separation or a bench QR test
-    // release), so this guards against any path -- a stray
-    // CAN_OPEN_FILL_VALVE that was mid-flight when the umbilical parted, a
-    // stuck fill state, a command racing the separation itself -- leaving
+    // already -- a hard safety invariant, independent of any CAN command.
+    // There is no valid reason for the ground fill line to be left open at
+    // the moment the umbilical parts (whether from a real abort/launch
+    // separation or a bench QR test release), so this guards against any
+    // path -- a stray CAN_OPEN_FILL_VALVE that was mid-flight when the
+    // umbilical parted, a command racing the separation itself -- leaving
     // the valve open at that instant. Fill_Valve.close() closes the valve
     // directly -- there is no fill-state bookkeeping to clear now that
     // GSEMU has no fill state machine.

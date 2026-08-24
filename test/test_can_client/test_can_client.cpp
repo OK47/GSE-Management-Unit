@@ -49,7 +49,7 @@ void test_matching_response_completes_request()
 // A frame addressed to us that ISN'T the awaited response (different
 // command, or arrives with no request pending at all) is reported as an
 // inbound request for the caller to dispatch -- e.g. GSEMU's Check_CAN()
-// receiving an EMU-initiated CAN_SET_FILL_TARGET.
+// receiving an EMU-initiated CAN_GET_HEALTH_STATUS.
 void test_unrelated_frame_reported_as_inbound_request()
 {
     Fake_CAN_Transport transport;
@@ -57,7 +57,7 @@ void test_unrelated_frame_reported_as_inbound_request()
     // No request pending.
 
     CAN_Command_Frame req;
-    req.command = CAN_SET_FILL_TARGET;
+    req.command = CAN_GET_HEALTH_STATUS;
     req.param   = 12.5f;
     transport.enqueueFrame( CAN_Pack_ID( CAN_NODE_GSEMU, CAN_NODE_EMU ),
                              (uint8_t *)&req, sizeof( req ) );
@@ -67,7 +67,7 @@ void test_unrelated_frame_reported_as_inbound_request()
     CAN_Poll_Result   result = client.poll( inbound_out, source_out );
 
     TEST_ASSERT_EQUAL( CAN_POLL_INBOUND_REQUEST, result );
-    TEST_ASSERT_EQUAL( CAN_SET_FILL_TARGET, inbound_out.command );
+    TEST_ASSERT_EQUAL( CAN_GET_HEALTH_STATUS, inbound_out.command );
     TEST_ASSERT_EQUAL_FLOAT( 12.5f, inbound_out.param );
     TEST_ASSERT_EQUAL_UINT8( CAN_NODE_EMU, source_out );
 }
