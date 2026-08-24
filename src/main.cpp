@@ -111,14 +111,6 @@ constexpr unsigned long CAN_RESPONSE_TIMEOUT_MS = 500;   // bumped from 200ms: d
 bool sd_ok  = false;   // set in setup(); used for CAN_GET_HEALTH_STATUS
 bool rtc_ok = false;   // set in setup(); used for CAN_GET_HEALTH_STATUS
 
-// Defined in Task 4 (fill state machine). 'reply_to' plumbed through
-// Fill_Begin() so its deferred tare reply can be routed back to
-// whichever node requested BEGIN_FILL -- see Advance_Pending_Fill_Operations().
-void        Fill_Set_Target( float target_lbm );
-void        Fill_Begin( uint8_t reply_to );
-void        Fill_Abort();
-Fill_Status Fill_Get_Status();
-
 void Get_RTC_DateTime( uint16_t *date, uint16_t *time );
 
 // Forward declaration needed here since Check_CAN()'s CAN_ARM_LCO_WATCH
@@ -198,14 +190,6 @@ void Send_CAN_Command_NoWait( uint8_t destination, CAN_Command command, float pa
     CAN_Controller.endPacket();
 }
 
-// Advances Fill_Begin()'s deferred tare reply and Check_Fill()'s
-// recurring weight poll. Called every Check_CAN() tick regardless of
-// whether a frame arrived, since Can.requestState()'s timeout can elapse
-// on a tick with no inbound traffic at all. Defined after the fill state
-// machine (near Check_Fill()) since it needs Fill_Valve and the fill_*
-// globals declared there; forward-declared here so Check_CAN() can call it.
-static void Advance_Pending_Fill_Operations();
-
 // Shared helper for the CAN_OPEN_FILL_VALVE/CAN_CLOSE_FILL_VALVE cases below --
 // issues the immediate Fill_Valve move and arms the deferred-response
 // bookkeeping Check_Fill_Valve_Move() (loop()) uses to confirm it physically
@@ -219,11 +203,6 @@ void Check_CAN()
     uint8_t            source;
     CAN_Poll_Result    result = Can.poll( frame, source );
 
-    // Advance any pending outbound operation regardless of what poll()
-    // just returned -- a timeout can occur even on a tick where no
-    // frame arrived at all.
-    Advance_Pending_Fill_Operations();
-
     if( result != CAN_POLL_INBOUND_REQUEST ) return;
 
     Log_Message( Tag::RXC, String( CAN_Command_Name_Safe( frame.command ) ) + " (" + String( frame.command ) + ")"
@@ -231,24 +210,6 @@ void Check_CAN()
 
     switch( frame.command )
     {
-        case CAN_SET_FILL_TARGET:
-            Fill_Set_Target( frame.param );
-            Send_CAN_Response( source, CAN_SET_FILL_TARGET, true, 0.0f );
-            break;
-
-        case CAN_BEGIN_FILL:
-            Fill_Begin( source );   // deferred reply -- see Task 5
-            break;
-
-        case CAN_QUERY_FILL_STATUS:
-            Send_CAN_Response( source, CAN_QUERY_FILL_STATUS, true, (float)Fill_Get_Status() );
-            break;
-
-        case CAN_ABORT_FILL:
-            Fill_Abort();
-            Send_CAN_Response( source, CAN_ABORT_FILL, true, 0.0f );
-            break;
-
         case CAN_GET_HEALTH_STATUS:
         {
             uint16_t bits = 0;
@@ -339,9 +300,11 @@ void Check_CAN()
     }
 }
 
-// Fill valve  --  servo-actuated, now driven autonomously by GSEMU's own
-// CAN-orchestrated fill state machine (Task 4) rather than an EMU GPIO
-// handshake. Hardware constants from KJO_Valve.h.
+// Fill valve  --  servo-actuated, opened/closed directly on EMU's command
+// (CAN_OPEN_FILL_VALVE/CAN_CLOSE_FILL_VALVE) -- GSEMU has no fill state
+// machine of its own; EMU owns tare/poll/target tracking (see docs/
+// superpowers/specs/2026-08-23-fill-monitoring-redesign-design.md).
+// Hardware constants from KJO_Valve.h.
 Valve Fill_Valve( FILL_VALVE,
                   FILL_VALVE_PWM, FILL_VALVE_PWM_OPEN, FILL_VALVE_PWM_CLOSE,
                   FILL_VALVE_ANALOG_PIN, FILL_VALVE_POS_OPEN, FILL_VALVE_POS_CLOSED,
@@ -393,29 +356,6 @@ void  Check_QR_Test_Release();
 void  Check_CAN_Presence();
 void  Log_Config();
 
-// --- Fill state machine ---------------------------------------------------------
-// Armed by EMU's CAN_BEGIN_FILL (after CAN_SET_FILL_TARGET has already
-// stored the target). Runs entirely locally on GSEMU: tares LCMU, opens
-// the Fill valve, polls LCMU's current weight against the stored target,
-// and closes the valve itself the moment the target is reached -- no
-// further authorization from EMU is needed to close. If LCMU stops
-// responding to weight polls, the fill is auto-aborted (valve closed)
-// after FILL_MAX_CONSECUTIVE_POLL_FAILURES consecutive misses, rather
-// than leaving the valve open indefinitely. EMU separately polls
-// Fill_Get_Status() via CAN_QUERY_FILL_STATUS at a much lower rate.
-constexpr unsigned long FILL_POLL_INTERVAL_MS               = 50;
-constexpr uint8_t       FILL_MAX_CONSECUTIVE_POLL_FAILURES  = 3;
-
-float         fill_target_lbm         = 0.0f;
-bool          fill_active             = false;
-Fill_Status   fill_state              = FILL_STATUS_IN_PROGRESS;
-unsigned long last_fill_poll_ms       = 0;
-uint8_t       fill_consecutive_fails  = 0;
-
-bool    begin_fill_reply_pending = false;   // Fill_Begin()'s tare request is outstanding
-uint8_t begin_fill_reply_dest    = 0;       // node to send the deferred CAN_BEGIN_FILL reply to
-bool    check_fill_poll_pending  = false;   // Check_Fill()'s weight-poll request is outstanding
-
 // Deferred single-valve-move state for CAN_OPEN_FILL_VALVE/CAN_CLOSE_FILL_VALVE
 // (RCU_UNIT_TEST only) -- Fill_Valve.open()/close() is issued immediately in
 // Check_CAN(), but the CAN response is deferred until Check_Fill_Valve_Move()
@@ -457,145 +397,6 @@ static void Begin_Fill_Move( uint8_t source, CAN_Command cmd, bool opening )
 // in Check_CAN() and Check_QR_Test_Release() (loop()).
 bool          qr_test_release_active   = false;
 unsigned long qr_test_release_deadline = 0;
-
-void Fill_Set_Target( float target_lbm )
-{
-    fill_target_lbm = target_lbm;
-}
-
-// Kicks off the tare-then-open-valve sequence and defers the
-// CAN_BEGIN_FILL reply to reply_to until it resolves (successfully or
-// via timeout) -- see Advance_Pending_Fill_Operations(). Does not
-// return a success/failure value: the caller (Check_CAN()'s
-// CAN_BEGIN_FILL case) never blocks on the outcome.
-void Fill_Begin( uint8_t reply_to )
-{
-    if( fill_active || begin_fill_reply_pending )
-    {
-        Send_CAN_Response( reply_to, CAN_BEGIN_FILL, true, 0.0f );   // already running or already starting
-        return;
-    }
-
-    Can.sendRequest( CAN_NODE_LCMU, CAN_TARE, 0.0f );
-    begin_fill_reply_pending = true;
-    begin_fill_reply_dest    = reply_to;
-}
-
-void Fill_Abort()
-{
-    if( begin_fill_reply_pending )
-    {
-        // A BEGIN_FILL tare request is still in flight -- cancel it
-        // (its eventual response/timeout is ignored, see
-        // Advance_Pending_Fill_Operations()) and tell the original
-        // BEGIN_FILL requester it did not succeed, since the operator
-        // aborted before the fill ever actually started.
-        Send_CAN_Response( begin_fill_reply_dest, CAN_BEGIN_FILL, false, 0.0f );
-        begin_fill_reply_pending = false;
-    }
-    check_fill_poll_pending = false;   // ignore any in-flight weight-poll result -- this function is authoritative
-
-    // Always close the valve on an abort request, regardless of fill_active
-    // -- Fill_Valve can be open via a path that never sets fill_active (e.g.
-    // RCU_UNIT_TEST's direct CAN_OPEN_FILL_VALVE, which bypasses the fill
-    // state machine entirely). An abort must guarantee the valve is safe
-    // NOW, not only when GSEMU's own bookkeeping agrees a fill was active.
-    Fill_Valve.close();
-    Log_Message( Tag::FIL, "Aborted -- valve closed." );
-
-    if( !fill_active ) return;
-
-    fill_active = false;
-    fill_state  = FILL_STATUS_ABORTED;
-}
-
-Fill_Status Fill_Get_Status()
-{
-    return fill_state;
-}
-
-// Call every loop() iteration. Non-blocking: polls LCMU at
-// FILL_POLL_INTERVAL_MS, closes the valve and marks complete once the
-// target is reached. Auto-aborts after FILL_MAX_CONSECUTIVE_POLL_FAILURES
-// consecutive missed polls rather than leaving the valve open forever.
-void Check_Fill()
-{
-    if( !fill_active )         return;
-    if( check_fill_poll_pending ) return;   // Advance_Pending_Fill_Operations() (called from Check_CAN()) owns this poll until it resolves
-
-    unsigned long now = millis();
-    if( now - last_fill_poll_ms < FILL_POLL_INTERVAL_MS ) return;
-    last_fill_poll_ms = now;
-
-    Can.sendRequest( CAN_NODE_LCMU, CAN_REPORT_CURRENT_WEIGHT, 0.0f );
-    check_fill_poll_pending = true;
-}
-
-// Advances Fill_Begin()'s deferred tare reply and Check_Fill()'s
-// recurring weight poll -- see the forward declaration near Check_CAN()
-// for why this is called every tick regardless of inbound traffic.
-static void Advance_Pending_Fill_Operations()
-{
-    if( begin_fill_reply_pending )
-    {
-        CAN_Request_State state = Can.requestState( CAN_RESPONSE_TIMEOUT_MS );
-
-        if( state == CAN_REQUEST_COMPLETE )
-        {
-            Fill_Valve.open();
-            fill_active            = true;
-            fill_state              = FILL_STATUS_IN_PROGRESS;
-            fill_consecutive_fails  = 0;
-            last_fill_poll_ms       = millis();
-            Log_Message( Tag::FIL, "Started -- target " + String( fill_target_lbm, 2 ) + " lbm" );
-            Send_CAN_Response( begin_fill_reply_dest, CAN_BEGIN_FILL, true, 0.0f );
-            begin_fill_reply_pending = false;
-        }
-        else if( state == CAN_REQUEST_TIMED_OUT )
-        {
-            Log_Message( Tag::FIL, "LCMU did not respond to tare -- fill not started." );
-            Send_CAN_Response( begin_fill_reply_dest, CAN_BEGIN_FILL, false, 0.0f );
-            begin_fill_reply_pending = false;
-        }
-        return;   // fill_active can't be true yet on this path -- no need to also check Check_Fill()'s poll below
-    }
-
-    if( !check_fill_poll_pending ) return;
-
-    CAN_Request_State state = Can.requestState( CAN_RESPONSE_TIMEOUT_MS );
-    if( state == CAN_REQUEST_PENDING ) return;
-
-    check_fill_poll_pending = false;
-
-    if( state == CAN_REQUEST_TIMED_OUT )
-    {
-        fill_consecutive_fails++;
-        Log_Message( Tag::FIL, "LCMU did not respond to weight poll ("
-                         + String( fill_consecutive_fails ) + "/" + String( FILL_MAX_CONSECUTIVE_POLL_FAILURES ) + ")." );
-
-        if( fill_consecutive_fails >= FILL_MAX_CONSECUTIVE_POLL_FAILURES )
-        {
-            Fill_Valve.close();
-            fill_active = false;
-            fill_state  = FILL_STATUS_ABORTED;
-            Log_Message( Tag::FIL, "Aborted -- LCMU unreachable after 3 consecutive polls." );
-        }
-        return;
-    }
-
-    // COMPLETE
-    fill_consecutive_fails = 0;
-    const CAN_Response_Frame &weight_resp = Can.response();
-
-    if( weight_resp.r_val >= fill_target_lbm )
-    {
-        Fill_Valve.close();
-        fill_active = false;
-        fill_state  = FILL_STATUS_COMPLETE;
-        Log_Message( Tag::FIL, "Target reached at " + String( weight_resp.r_val, 2 )
-                         + " lbm -- valve closed." );
-    }
-}
 
 // -----------------------------------------------------------------------------
 void setup()
@@ -754,8 +555,9 @@ void loop()
     // release), so this guards against any path -- a stray
     // CAN_OPEN_FILL_VALVE that was mid-flight when the umbilical parted, a
     // stuck fill state, a command racing the separation itself -- leaving
-    // the valve open at that instant. Fill_Abort() closes the valve
-    // unconditionally (see its own fix) and clears fill-state bookkeeping.
+    // the valve open at that instant. Fill_Valve.close() closes the valve
+    // directly -- there is no fill-state bookkeeping to clear now that
+    // GSEMU has no fill state machine.
     //
     // Deliberately does NOT keep re-closing the valve for the rest of the
     // disconnected period: GSEMU's own local front-panel Button B/C (see
@@ -773,7 +575,7 @@ void loop()
         // Falling edge: umbilical just separated. Message omits the word
         // "umbilical" -- the [QRL] tag prefix already identifies it.
         Report_Status( &Screen, Tag::QRL, "<open>", false );
-        if( !Fill_Valve.isClosed() ) Fill_Abort();
+        if( !Fill_Valve.isClosed() ) Fill_Valve.close();
     }
     else if( qr_connected_now && !qr_was_connected )
     {
@@ -805,9 +607,6 @@ void loop()
 
     // Service CAN command dispatch (EMU -> GSEMU)
     Check_CAN();
-
-    // Service autonomous fill state machine (tare, open, poll, close on target)
-    Check_Fill();
 }
 
 // -----------------------------------------------------------------------------
