@@ -18,7 +18,9 @@
 constexpr uint8_t BUTTON_A_EIO =  3;   // Port A, pin A3  --  display button A
 constexpr uint8_t BUTTON_B_EIO =  4;   // Port A, pin A4  --  display button B
 constexpr uint8_t BUTTON_C_EIO =  5;   // Port A, pin A5  --  display button C
-constexpr uint8_t BUZZER_EIO   =  6;   // Port A, pin A6  --  audible alarm buzzer relay
+// A6 free -- was BUZZER_EIO. GSEMU has no buzzer: it lives in a closed case,
+// making any buzzer both hard to hear at a distance and easily confused with
+// EMU's buzzer, the system's only audible alarm. Removed 2026-08-26.
 
 // Port B pins (8-15)
 constexpr uint8_t AUX_IO_1_EIO =  8;   // Port B, pin B0  --  AUX connector 1, I/O 1

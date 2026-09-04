@@ -69,9 +69,6 @@ Adafruit_SH1107 Screen = Adafruit_SH1107( 64, 128, &Wire );
 // MCP23X17 GPIO expander (I2C)
 Adafruit_MCP23X17 E_GPIO;
 
-// Buzzer relay (uses the GPIO expander)
-Relay Buzzer = Relay( &E_GPIO, BUZZER_EIO );
-
 // PWM servo driver (I2C, Adafruit ServoWing)
 Adafruit_PWMServoDriver Servos = Adafruit_PWMServoDriver();
 
@@ -343,8 +340,6 @@ SdFile Log_file;
 String log_file_name;
 
 // --- Forward declarations -----------------------------------------------------
-void  Test_Buzzer();
-void  Beep( short count );
 void  Check_Buttons();
 float GSEMU_Battery_Voltage();
 void  Check_Battery();
@@ -478,11 +473,6 @@ void setup()
         Report_Status( &Screen, Tag::SDC, log_file_name, true );
     }
 
-    // -- Buzzer ----------------------------------------------------------------
-    Buzzer.begin();
-    Report_Status( &Screen, Tag::BUZ, "ready.", true );
-    Test_Buzzer();
-
     // -- External ADC (ADS1015) ------------------------------------------------
     Analog_Inputs.begin();
     Analog_Inputs.setGain( GAIN_ONE );
@@ -541,9 +531,6 @@ void setup()
 // -----------------------------------------------------------------------------
 void loop()
 {
-    // Service timed relay outputs
-    Buzzer.update();
-
     // Service QR release servo: follow CMD level, detect physical separation
     QR_Release.update();
 
@@ -610,38 +597,6 @@ void loop()
 }
 
 // -----------------------------------------------------------------------------
-// Self-test: three short buzzer beeps.
-// NOTE: Uses explicit on()/off() with blocking delays rather than the non-blocking
-// on(duration) form, because this function is called from setup() where loop()
-// (and therefore Relay::update()) never runs to service the timer.
-void Test_Buzzer()
-{
-    for( short i = 0; i < 3; i++ )
-    {
-        Buzzer.on();    // energise immediately
-        delay( 75 );   // hold for 75 ms
-        Buzzer.off();   // de-energise immediately
-        delay( 75 );   // silent gap between beeps
-    }
-}
-
-// -----------------------------------------------------------------------------
-// Audible confirmation: 'count' short blocking beeps (100 ms on, 100 ms gap).
-//
-// Uses delay() and is therefore BLOCKING.  This is acceptable anywhere in this
-// application because Report_Status()'s display update is also blocking, so
-// loop() is already interrupted during button-response sequences.  Beeps
-// play before the status update.
-void Beep( short count )
-{
-    for( short i = 0; i < count; i++ )
-    {
-        Buzzer.on();   delay( 100 );   Buzzer.off();
-        if( i < count - 1 ) delay( 100 );   // gap between beeps
-    }
-}
-
-// -----------------------------------------------------------------------------
 // Poll the three front-panel buttons and act on falling-edge (press) events.
 // Buttons are active-LOW (INPUT_PULLUP on MCP23X17 expansion GPIO).
 //
@@ -665,7 +620,6 @@ void Check_Buttons()
     if( curr_A == LOW && prev_A == HIGH )
     {
         // Falling edge: button pressed — engage local release
-        Beep( 1 );
         Report_Status( &Screen, Tag::QRL, "Local release commanded.", false );
         QR_Release.localRelease();
     }
@@ -676,21 +630,19 @@ void Check_Buttons()
         Report_Status( &Screen, Tag::QRL, "Local release complete.", false );
     }
 
-    // Button B  --  manually command Fill valve CLOSED (2 beeps)
+    // Button B  --  manually command Fill valve CLOSED
     // NOTE: In normal operation the EMU drives open/close via the command bit.
     //       These buttons allow local testing of the valve without the EMU.
     if( curr_B == LOW && prev_B == HIGH )
     {
         Report_Status( &Screen, Tag::FIL, "valve CLOSED (local).", false );
-        Beep( 2 );
         Fill_Valve.close();
     }
 
-    // Button C  --  manually command Fill valve OPEN (1 beep)
+    // Button C  --  manually command Fill valve OPEN
     if( curr_C == LOW && prev_C == HIGH )
     {
         Report_Status( &Screen, Tag::FIL, "valve OPEN (local).", false );
-        Beep( 1 );
         Fill_Valve.open();
     }
 
