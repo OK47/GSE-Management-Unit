@@ -49,6 +49,7 @@
 
 #include <Arduino.h>
 #include "KJO_GPIO.h"
+#include "KJO_LCO_Sense.h"
 
 // ─── ADS1015 base scale ───────────────────────────────────────────────────────
 // Hardware constant — identical for all units using GAIN_ONE (±4.096 V full scale).
@@ -64,12 +65,16 @@ constexpr float   GSEMU_LIPO_SCALE  = 2.79111f;         // ⚠ placeholder — c
 
 // ─── ADS1015 channel assignments ──────────────────────────────────────────────
 constexpr uint8_t AD_LIPO_CHANNEL   = 3;    // Channel 3: 2S LiPo voltage divider
-constexpr uint8_t AD_AUX_CHANNEL    = 0;    // Channel 0: AUX analog input
+// CENTRALIZED (2026-09): AD_AUX_CHANNEL/AD_AUX_THRESHOLD now come from the
+// shared KJO_LCO_Sense.h (KJO_Shared_Libraries) instead of being an
+// independently-maintained local copy that merely documented an expected
+// match with EMU's AD_AIRSTART_CHANNEL/AIRSTART_THRESHOLD -- see that
+// header for the full rationale. Local names kept as aliases so no other
+// code in this file/main.cpp needed to change.
+constexpr uint8_t AD_AUX_CHANNEL    = LCO_SENSE_ADS_CHANNEL;   // Channel 0: AUX analog input
 
 // ─── AUX input digital threshold ──────────────────────────────────────────────
-// 0.5 V (post-divider, at the ADS1015 pin) expressed in counts at GAIN_ONE:
-//   0.5 V / 0.00199144777 V/count ≈ 251 counts.
-constexpr int16_t AD_AUX_THRESHOLD  = 251;  // counts — readings >= this are HIGH
+constexpr int16_t AD_AUX_THRESHOLD  = LCO_SENSE_THRESHOLD;  // counts — readings >= this are HIGH
 
 // ─── Battery display interval ─────────────────────────────────────────────────
 constexpr uint32_t BATTERY_DISPLAY_INTERVAL_MS = 10000; // ms — display battery voltage every 10 s

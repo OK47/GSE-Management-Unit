@@ -25,6 +25,7 @@
 #include <math.h>
 #include <Adafruit_PWMServoDriver.h>
 #include <KJO_System_Config.h>          // USE_MAPPING, M_PI
+#include <KJO_Valve_Timing.h>           // VALVE_MOVE_TIMEOUT_MS
 
 // --- Valve index constants ---------------------------------------------------
 // GSEMU only uses the Fill valve; index matches the enum in KJO_Command_Defs.h.
@@ -77,9 +78,13 @@ constexpr uint8_t  MOVING                      =    1;
 constexpr uint8_t  MOVE_SUCCEEDED              =    0;
 constexpr uint8_t  MOVE_FAILED                 =    1;
 constexpr uint8_t  MOVE_CONTINUING             =    2;
-constexpr uint16_t MOVE_TIMEOUT                = 2500;  // ms  - maximum time allowed for a move
-                                                         // (increased from 1000 — 5-turn servo through
-                                                         //  60:16 gear needs ~1.5-2s for full stroke)
+// CENTRALIZED (2026-09): now sourced from the shared KJO_Valve_Timing.h
+// (KJO_Shared_Libraries) instead of an independently-maintained local
+// copy that merely documented an expected match with EMU's own
+// MOVE_TIMEOUT (same physical valve/servo/gear) -- see that header for
+// the full rationale, including EMU's own cross-CAN dependency on this
+// value via EMU_GSEMU_FILL_VALVE_MOVE_TIMEOUT_MS.
+constexpr uint16_t MOVE_TIMEOUT                = VALVE_MOVE_TIMEOUT_MS;
 constexpr uint8_t  VALVE_POSITION_AVERAGING_COUNT =  4; // ADC reads averaged for position
 constexpr uint8_t  VALVE_MOVING_THRESHOLD      =    2;  // counts - minimum delta to detect motion
 constexpr uint8_t  VALVE_POSITION_DEAD_BAND    =   15;  // counts - position tolerance for open/close detection
